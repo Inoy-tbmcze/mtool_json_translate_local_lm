@@ -1,0 +1,14 @@
+{
+    "api_endpoint": "http://127.0.0.1:1234/v1/chat/completions",
+    "api_key": "",
+    "model": "gemma-3-12b",
+    "source_language": "Japanese",
+    "target_language": "English",
+    "max_retries": 3,
+    "retry_delay": 2,
+    "request_timeout": 60,
+    "batch_size": 10,
+    "save_interval": 10,
+    "api_type": "lmstudio"
+}
+
