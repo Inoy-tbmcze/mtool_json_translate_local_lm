@@ -2,10 +2,11 @@ import json
 import requests
 import time
 import os
-from typing import Dict, Any, Tuple, Optional
+from typing import Dict, Any,
 import logging
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
 
 class JSONTranslator:
     def __init__(self, config_file: str = "translate_config.json"):
@@ -343,7 +344,8 @@ def main():
 
     # Check for the existence of a progress file.
     if os.path.exists(progress_file):
-        response = input("A translation progress file has been found. Do you want to resume the previous translation?(y/n): ")
+        response = input(
+            "A translation progress file has been found. Do you want to resume the previous translation?(y/n): ")
         if response.lower() not in ['y', 'yes', '是']:
             os.remove(progress_file)
             print("Progress file deleted; translation will restart.")
