@@ -340,7 +340,6 @@ def main():
     print(f"Input file: {input_file}")
     print(f"Output file: {output_file}")
     print(f"Progress file: {progress_file}")
-    print()
 
     # Check for the existence of a progress file.
     if os.path.exists(progress_file):
