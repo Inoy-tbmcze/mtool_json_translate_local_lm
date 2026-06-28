@@ -2,7 +2,7 @@ import json
 import requests
 import time
 import os
-from typing import Dict, Any,
+from typing import Dict, Any
 import logging
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
