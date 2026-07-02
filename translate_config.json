@@ -5,9 +5,9 @@
     "source_language": "Japanese",
     "target_language": "English",
     "max_retries": 3,
-    "retry_delay": 2,
+    "retry_delay": 0.1,
     "request_timeout": 60,
-    "batch_size": 10,
+    "batch_size": 5,
     "save_interval": 10,
     "api_type": "lmstudio"
 }

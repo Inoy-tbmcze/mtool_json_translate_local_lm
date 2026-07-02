@@ -63,37 +63,40 @@ class JSONTranslator:
         batch_text = ""
         for i, (key, value) in enumerate(texts):
             # Convert newline characters to visible markers to avoid confusion during batch processing.
-            escaped_value = value.replace('\n', '\\n').replace('\t', '\\t').replace('\r', '\\r')
+            escaped_value = value.replace('\n', '\\n').replace('\t', '\\t')
             batch_text += f"[{i + 1}] {escaped_value}\n"
 
-        prompt = f"""
-        You are an expert {self.config.get('source_language')}-to-{self.config.get('target_language')} translator.
-        Translate the user's {self.config.get('source_language')} text into natural idiomatic, and fluid {self.config.get('target_language')}.
-        Please batch process text according to the following rules:
-        1. If the text contains {self.config.get('source_language')} (Hiragana, Katakana, Kanji), please translate it into {self.config.get('target_language')}.
-        2. If the text is purely English, numbers, symbols, or IDs, please leave it as is.
-        3. All formatting in the original text must be preserved, including newlines(\\n), \\r, \\t, spaces, punctuation, etc.
-        5. Return results in the order of the input numbers, one result per line.
-        6 Only return the processed results; do not add serial numbers, explanations, or other content.
-        7. If the original text contains \\n, the translation result must also include \\n in the corresponding position.
-        9 If the original text contains \\r, the translation result must also include \\r in the corresponding position.
-        11. If you are unsure how to process the text, please leave the original text unchanged.
-        12. If original text contains file extensions or looks like file path, please leave the original text unchanged.
-        """
+        input_dict = {}
+        for line in batch_text.strip().split('\n'):
+            if line.startswith('[') and ']' in line:
+                parts = line.split(']', 1)
+                key = parts[0].replace('[', '').strip()
+                val = parts[1].strip()
+                input_dict[key] = val
+
+        json_batch = json.dumps(input_dict, ensure_ascii=False)
+
+        source_lang = self.config.get('source_language')
+        target_lang = self.config.get('target_language')
+
+        prompt = (
+            f"You are a data translation utility. Your input is a JSON object containing line IDs and text values. "
+            f"Translate the values from {source_lang} to {target_lang} and return a JSON object with the EXACT same keys.\n\n"
+            f"Rules:\n"
+            f"1. Never merge keys or omit keys. The output JSON must have identical keys to the input JSON.\n"
+            f"2. Translate sentence fragments exactly as fragments. Do not combine text across different keys.\n"
+            f"3. If a value is pure English, code, or a system ID, leave it exactly as is.\n"
+            f"4. Respond ONLY with the valid JSON object. Do not include markdown formatting or explanations."
+        )
 
         data = {
             'model': self.config['model'],
             'messages': [
-                {
-                    "role": "system",
-                    "content": prompt},
-                {
-                    'role': 'user',
-                    'content': batch_text
-                }
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": json_batch}
             ],
             'max_tokens': 4000,
-            'temperature': 0.6
+            'temperature': 0.0,
         }
 
         for attempt in range(self.config['max_retries']):
@@ -110,16 +113,28 @@ class JSONTranslator:
                     if 'choices' in result and len(result['choices']) > 0:
                         translation_text = result['choices'][0]['message']['content'].strip()
 
+                        # Securely sanitize markdown block wrappers without using literal markdown sequence in code
+                        markdown_marker = chr(96) * 3
+                        if translation_text.startswith(markdown_marker):
+                            translation_text = translation_text.strip(markdown_marker).strip()
+                            if translation_text.lower().startswith("json"):
+                                translation_text = translation_text[4:].strip()
+
+                        try:
+                            translated_json = json.loads(translation_text)
+                        except json.JSONDecodeError as e:
+                            self.logger.error(
+                                f"Gemma-3-12b output is not valid JSON on attempt {attempt + 1}: {e}"
+                            )
+                            raise ValueError("Model failed to adhere to the requested JSON format constraint.")
+
                         translated_results = {}
-                        translation_lines = translation_text.split('\n')
 
                         for i, (key, original_value) in enumerate(texts):
-                            if i < len(translation_lines):
-                                translated_line = translation_lines[i].strip()
-                                # Remove potential numbering prefixes.
-                                import re
-                                translated_line = re.sub(r'^\[\d+\]\s*', '', translated_line)
-                                # Restore line breaks and tab characters
+                            lookup_key = str(i + 1)
+
+                            if lookup_key in translated_json and translated_json[lookup_key] is not None:
+                                translated_line = str(translated_json[lookup_key]).strip()
                                 translated_line = translated_line.replace('\\n', '\n').replace('\\t', '\t')
 
                                 if self.is_valid_translation(original_value, translated_line):
@@ -129,40 +144,46 @@ class JSONTranslator:
                                 else:
                                     translated_results[key] = original_value
                                     self.logger.warning(
-                                        f"Batch translation results are invalid; please retain the original text.: {original_value}")
+                                        f"Translation validation failed. Retaining original: {original_value}")
                             else:
-                                # If the translated result does not have enough lines, retain the original text.
                                 translated_results[key] = original_value
                                 self.logger.warning(
-                                    f"The batch translation results are insufficient in number of lines; the original text will be retained.: {key}")
+                                    f"Key '{lookup_key}' missing from JSON response; falling back to original value."
+                                )
 
                         return translated_results
                     else:
                         self.logger.error(f"API response format error: {result}")
 
                 elif response.status_code == 429:
-                    self.logger.warning(f"API limit reached, waiting {self.config['retry_delay']} Retry in seconds...")
+                    self.logger.warning(f"Rate limit hit. Sleeping {self.config['retry_delay']}s...")
                     time.sleep(self.config['retry_delay'])
 
                 elif response.status_code == 401:
-                    self.logger.error("API key error, please check configuration.")
+                    self.logger.error("API authorization key is invalid. Aborting batch.")
                     return {}
 
                 else:
                     self.logger.error(
-                        f"Batch translation API request failed, status code: {response.status_code}, response: {response.text}")
+                        f"API request failure. Status code: {response.status_code}, Response: {response.text}"
+                    )
 
             except requests.exceptions.Timeout:
-                self.logger.warning(f"Batch translation request timed out，第 {attempt + 1} 次尝试...")
+                self.logger.warning(
+                    f"Request timed out. Retrying attempt {attempt + 1}/{self.config['max_retries']}...")
 
             except requests.exceptions.ConnectionError:
-                self.logger.warning(f"批量翻译连接失败，第 {attempt + 1} 次尝试...")
+                self.logger.warning(
+                    f"Network connection failed. Retrying attempt {attempt + 1}/{self.config['max_retries']}...")
 
             except Exception as e:
-                self.logger.error(f"批量翻译过程中出现错误: {str(e)}")
+                self.logger.error(f"Unexpected exception encountered during batch processing: {str(e)}")
 
             if attempt < self.config['max_retries'] - 1:
                 time.sleep(self.config['retry_delay'])
+
+        fallback_results = {key: original_value for key, original_value in texts}
+        self.logger.error("All translation retries exhausted. Returned un-translated fallbacks.")
 
         # If batch translation fails, return the original text.
         return index, {key: value for key, value in texts}
@@ -287,7 +308,7 @@ class JSONTranslator:
 
             all_batches.append(batch)
 
-        giga_chunks = [all_batches[i:i + 30] for i in range(0, len(all_batches), 30)]
+        giga_chunks = [all_batches[i:i + 10] for i in range(0, len(all_batches), 10)]
 
         for giga_index, giga_chunk in enumerate(giga_chunks):
             results = [None] * len(giga_chunk)
@@ -305,9 +326,11 @@ class JSONTranslator:
 
             for result in results:
                 if result is not None:
-                    print(result)
-                    translated_data.update(result)
-                self.save_progress(translated_data, progress_file)
+                    try:
+                        translated_data.update(result)
+                    except Exception as e:
+                        print(result)
+            self.save_progress(translated_data, progress_file)
 
         with open(output_file, 'w', encoding='utf-8') as f:
             json.dump(translated_data, f, ensure_ascii=False, indent=2)
