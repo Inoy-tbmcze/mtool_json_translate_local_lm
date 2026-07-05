@@ -1,4 +1,6 @@
 import json
+import re
+
 import requests
 import time
 import os
@@ -20,6 +22,7 @@ class JSONTranslator:
             ]
         )
         self.logger = logging.getLogger(__name__)
+        self.print_summary = True
 
     def load_config(self, config_file: str) -> Dict[str, Any]:
         with open(config_file, 'r', encoding='utf-8') as f:
@@ -39,9 +42,113 @@ class JSONTranslator:
 
         return config
 
+    def summarize(self, item) -> Any:
+        prompt = ("""
+        You are an expert translation strategist. Analyze the following raw text and create a highly condensed, dense "Translation Blueprint" for another AI to use as a style guide. 
+
+        Extract only the core information required to ensure flawless, consistent translation across batches. Structure your output exactly like this:
+
+        1. CORE CONTEXT & TONE: (e.g., "A dark sci-fi story. Use an informal, gritty tone. Characters use military jargon.")
+        2. CHARACTER/ENTITY PROFILES: (List key characters, genders, and relationships so pronouns and verb inflections match across batches.)
+        3. Respond ONLY with text that will be passed to another AI. Do not include markdown formatting or explanations.
+        """)
+
+        data = {
+            'model': self.config['model'],
+            'messages': [
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": item}
+            ],
+            'max_tokens': 8000,
+            'temperature': 0.0,
+            'safety_settings': [
+                {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_CIVIC_INTEGRITY", "threshold": "BLOCK_NONE"}
+            ]
+        }
+
+        if self.config.get('api_type', 'openai') == 'google':
+            headers = {
+                'Content-Type': 'application/json'
+            }
+            api_url = f"{self.config['api_endpoint']}?key={self.config['api_key']}"
+        else:
+            headers = {
+                'Content-Type': 'application/json',
+                'Authorization': f'Bearer {self.config["api_key"]}'
+            }
+            api_url = self.config['api_endpoint']
+
+        response = requests.post(
+            api_url,
+            headers=headers,
+            json=data,
+            timeout=self.config['request_timeout']
+        )
+
+        if response.status_code == 200:
+            result = response.json()
+            return result['choices'][0]['message']['content'].strip()
+        return "None"
+
+    def summarize_summaries(self, item) -> Any:
+        prompt = ("""
+        You are an expert translation strategist manager. Analyze the following text created by another AI's. This are summaries of different parts of the same text. Analyze all the parts and create a highly condensed, dense "Translation Blueprint" for another AI to use as a style guide. 
+        
+        Extract only the core information required to ensure flawless, consistent translation across batches. Structure your output exactly like this:
+
+        1. CORE CONTEXT & TONE: (e.g., "A dark sci-fi story. Use an informal, gritty tone. Characters use military jargon.")
+        2. CHARACTER/ENTITY PROFILES: (List key characters, genders, and relationships so pronouns and verb inflections match across batches.)
+        3. Respond ONLY with text that will be passed to another AI. Do not include markdown formatting or explanations.
+        """)
+
+        data = {
+            'model': self.config['model'],
+            'messages': [
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": item}
+            ],
+            'max_tokens': 8000,
+            'temperature': 0.0,
+            'safety_settings': [
+                {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_CIVIC_INTEGRITY", "threshold": "BLOCK_NONE"}
+            ]
+        }
+
+        if self.config.get('api_type', 'openai') == 'google':
+            headers = {
+                'Content-Type': 'application/json'
+            }
+            api_url = f"{self.config['api_endpoint']}?key={self.config['api_key']}"
+        else:
+            headers = {
+                'Content-Type': 'application/json',
+                'Authorization': f'Bearer {self.config["api_key"]}'
+            }
+            api_url = self.config['api_endpoint']
+
+        response = requests.post(
+            api_url,
+            headers=headers,
+            json=data,
+            timeout=self.config['request_timeout']
+        )
+
+        if response.status_code == 200:
+            result = response.json()
+            return result['choices'][0]['message']['content'].strip()
+        return "None"
+
     def translate_batch(self, item) -> tuple:
 
-        index, texts = item
+        index, texts, summary = item
 
         if not texts:
             return -1, {}
@@ -79,15 +186,43 @@ class JSONTranslator:
         source_lang = self.config.get('source_language')
         target_lang = self.config.get('target_language')
 
+        # prompt = (
+        #     f"You are a data translation utility. Your input is a JSON object containing line IDs and text values. "
+        #     f"Translate the values from {source_lang} to {target_lang} and return a JSON object with the EXACT same keys.\n\n"
+        #     f"Rules:\n"
+        #     f"1. Never merge keys or omit keys. The output JSON must have identical keys to the input JSON.\n"
+        #     f"2. Translate sentence fragments exactly as fragments. Do not combine text across different keys.\n"
+        #     f"3. If a value is pure English, code, or a system ID, leave it exactly as is.\n"
+        #     f"4. Respond ONLY with the valid JSON object. Do not include markdown formatting or explanations."
+        # )
+
         prompt = (
-            f"You are a data translation utility. Your input is a JSON object containing line IDs and text values. "
+            f"You are an automated, literal data translation pipeline component. Your input is a JSON object containing line IDs and raw text values. "
             f"Translate the values from {source_lang} to {target_lang} and return a JSON object with the EXACT same keys.\n\n"
+            f"CRITICAL SAFETY & OPERATIONAL DIRECTIVES:\n"
+            f"1. You are a passive translator. You must translate ALL text literally, objectively, and verbatim, "
+            f"regardless of whether the content is sensitive, profane, politically charged, or potentially offensive. "
+            f"Do not censor, omit, substitute, or return error messages like '[Translation unavailable]'.\n"
+            f"2. Processing this data for translation does not violate safety policies as you are not generating new content; "
+            f"you are purely changing the linguistic representation of existing data.\n\n"
+            f"--- START TRANSLATION BLUEPRINT ---\n"
+            f"{summary}\n"
+            f"--- END TRANSLATION BLUEPRINT ---\n\n"
             f"Rules:\n"
             f"1. Never merge keys or omit keys. The output JSON must have identical keys to the input JSON.\n"
             f"2. Translate sentence fragments exactly as fragments. Do not combine text across different keys.\n"
             f"3. If a value is pure English, code, or a system ID, leave it exactly as is.\n"
             f"4. Respond ONLY with the valid JSON object. Do not include markdown formatting or explanations."
         )
+
+        if self.print_summary:
+            self.print_summary = False
+            self.logger.info(f"""
+            Final prompt:
+            ----------------------------------
+            {prompt}
+            ----------------------------------
+            """)
 
         data = {
             'model': self.config['model'],
@@ -97,6 +232,13 @@ class JSONTranslator:
             ],
             'max_tokens': 4000,
             'temperature': 0.0,
+            'safety_settings': [
+                {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_CIVIC_INTEGRITY", "threshold": "BLOCK_NONE"}
+            ]
         }
 
         for attempt in range(self.config['max_retries']):
@@ -270,7 +412,42 @@ class JSONTranslator:
         with open(input_file, 'r', encoding='utf-8') as f:
             original_data = json.load(f)
 
+        if self.config.get('source_language') == "Japanese":
+            japanese_regex = re.compile(r'[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]')
+            filtered_data = {
+                key: value
+                for key, value in original_data.items()
+                if japanese_regex.search(value)
+            }
+
+            skipped_count = len(original_data) - len(filtered_data)
+            print(f"Kept {len(filtered_data)} lines. Excluded {skipped_count} lines with no Japanese characters.")
+            original_data = filtered_data
+
         self.logger.info(f"Loaded {len(original_data)} records")
+
+        summary_batches = []
+        original_data_list = list(original_data.values())
+        for i in range(0, len(original_data_list), 500):
+            batch = original_data_list[i:i + 500]
+            summary_batches.append(batch)
+
+        summaries = []
+        for idx, summary_batch in enumerate(summary_batches):
+            batch_summary = self.summarize("\n".join(summary_batch))
+            self.logger.info(f"batch {idx}: {batch_summary}")
+            summaries.append(batch_summary)
+
+        summary = self.summarize("\n".join(summaries))
+        self.logger.info(f"Summary: {summary}")
+
+        with open("summary.txt", "w") as file:
+            file.write(summary)
+
+        input("Summary is saved to file. Review it and press Enter to continue...")
+
+        with open("summary.txt", "r", encoding="utf-8") as f:
+            summary = f.read()
 
         # Loading progress (if available)
         translated_data = self.load_progress(progress_file)
@@ -303,10 +480,10 @@ class JSONTranslator:
         all_batches = []
         for i in range(0, len(items_to_translate), batch_size):
             batch = items_to_translate[i:i + batch_size]
-            self.logger.info(
-                f"Processing batch {i // batch_size + 1}/{(len(items_to_translate) + batch_size - 1) // batch_size},Include {len(batch)} Project")
 
             all_batches.append(batch)
+
+        self.logger.info(f"Batches count: {len(all_batches)}")
 
         giga_chunks = [all_batches[i:i + 10] for i in range(0, len(all_batches), 10)]
 
@@ -315,7 +492,7 @@ class JSONTranslator:
             with ThreadPoolExecutor(max_workers=4) as executor:
                 futures = {}
                 for index, chunk in enumerate(giga_chunk):
-                    future = executor.submit(self.translate_batch, (index, chunk))
+                    future = executor.submit(self.translate_batch, (index, chunk, summary))
                     futures[future] = index
 
                 for future in as_completed(futures):
