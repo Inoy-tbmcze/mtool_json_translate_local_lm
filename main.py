@@ -9,6 +9,8 @@ import logging
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+SUMMARY_BATCH_SIZE = 1000
+
 
 class JSONTranslator:
     def __init__(self, config_file: str = "translate_config.json"):
@@ -59,7 +61,7 @@ class JSONTranslator:
                 {"role": "system", "content": prompt},
                 {"role": "user", "content": item}
             ],
-            'max_tokens': 8000,
+            'max_tokens': 6000,
             'temperature': 0.0,
             'safety_settings': [
                 {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
@@ -92,11 +94,15 @@ class JSONTranslator:
         if response.status_code == 200:
             result = response.json()
             return result['choices'][0]['message']['content'].strip()
-        return "None"
+        return None
 
     def summarize_summaries(self, item) -> Any:
         prompt = ("""
         You are an expert translation strategist manager. Analyze the following text created by another AI's. This are summaries of different parts of the same text. Analyze all the parts and create a highly condensed, dense "Translation Blueprint" for another AI to use as a style guide. 
+        Analyze every instance of 'CORE CONTEXT & TONE' and combine them together.
+        Analyze every instance of 'CHARACTER/ENTITY PROFILES' and merge them together combining reoccurring characters.
+        Pay high attention on protagonist characters. Try to keep as much information about protagonist and core characters.
+        Try to keep list of characters compact. It is OK to exclude characters that doesn't seem as story relevant.
         
         Extract only the core information required to ensure flawless, consistent translation across batches. Structure your output exactly like this:
 
@@ -144,7 +150,51 @@ class JSONTranslator:
         if response.status_code == 200:
             result = response.json()
             return result['choices'][0]['message']['content'].strip()
-        return "None"
+        return None
+
+    def split_and_summarize(self, lst):
+
+        result = self.summarize("\n".join(lst))
+
+        if result is not None:
+            return [result]
+
+        if len(lst) == 1:
+            return []
+
+        # 4. Split the list in half
+        mid = len(lst) // 2
+        left_half = lst[:mid]
+        right_half = lst[mid:]
+
+        # 5. Recursively process both halves and combine the accumulated results
+        return self.split_and_summarize(left_half) + self.split_and_summarize(right_half)
+
+    def split_and_summarize_summaries(self, lst):
+        # Base case: if the list is empty, there is nothing to process
+        if not lst:
+            return []
+
+        # 1. Try to process the current list/chunk with method_2
+        result = self.summarize_summaries("\n".join(lst))
+
+        # 2. If it succeeds (not None), wrap it in a list and return it
+        if result is not None:
+            return [result]
+
+        # 3. If it returns None, check if we can actually split it
+        if len(lst) == 1:
+            # Atomic element failed; we can't split a single item further.
+            # Returning an empty list drops the bad item.
+            return []
+
+        # 4. Split the list in half
+        mid = len(lst) // 2
+        left_half = lst[:mid]
+        right_half = lst[mid:]
+
+        # 5. Recursively process both halves and combine the accumulated results
+        return self.split_and_summarize_summaries(left_half) + self.split_and_summarize_summaries(right_half)
 
     def translate_batch(self, item) -> tuple:
 
@@ -404,9 +454,12 @@ class JSONTranslator:
     def translate_json_file(self,
                             input_file: str,
                             output_file: str,
-                            progress_file: str = None) -> bool:
+                            progress_file: str = None,
+                            summary_file: str = None) -> bool:
         if not progress_file:
             progress_file = f"{input_file}.progress.json"
+        if not summary_file:
+            summary_file = "summary.txt"
 
         # Load raw data
         with open(input_file, 'r', encoding='utf-8') as f:
@@ -426,25 +479,24 @@ class JSONTranslator:
 
         self.logger.info(f"Loaded {len(original_data)} records")
 
-        summary_batches = []
-        original_data_list = list(original_data.values())
-        for i in range(0, len(original_data_list), 500):
-            batch = original_data_list[i:i + 500]
-            summary_batches.append(batch)
+        if not os.path.exists(summary_file):
+            summary_batches = self.split_and_summarize(list(original_data.values()))
 
-        summaries = []
-        for idx, summary_batch in enumerate(summary_batches):
-            batch_summary = self.summarize("\n".join(summary_batch))
-            self.logger.info(f"batch {idx}: {batch_summary}")
-            summaries.append(batch_summary)
+            self.logger.info(f"summary_batches {len(summary_batches)}")
 
-        summary = self.summarize("\n".join(summaries))
-        self.logger.info(f"Summary: {summary}")
+            while True:
+                self.logger.info(f"summaries {len(summary_batches)}")
+                summary = self.summarize_summaries("\n".join(summary_batches))
+                if summary:
+                    self.logger.info(f"Summary: {summary}")
+                    break
+                else:
+                    summary_batches = self.split_and_summarize_summaries(summary_batches)
 
-        with open("summary.txt", "w") as file:
-            file.write(summary)
+            with open("summary.txt", "w", encoding="utf-8") as file:
+                file.write(summary)
 
-        input("Summary is saved to file. Review it and press Enter to continue...")
+            input("Summary is saved to file. Review it and press Enter to continue...")
 
         with open("summary.txt", "r", encoding="utf-8") as f:
             summary = f.read()
@@ -536,10 +588,12 @@ def main():
     input_file = "ManualTransFile.json"
     output_file = f"translated_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
     progress_file = "translation_progress.json"
+    summary_file = "summary.txt"
 
     print(f"Input file: {input_file}")
     print(f"Output file: {output_file}")
     print(f"Progress file: {progress_file}")
+    print(f"Summary file: {summary_file}")
 
     # Check for the existence of a progress file.
     if os.path.exists(progress_file):
@@ -549,8 +603,15 @@ def main():
             os.remove(progress_file)
             print("Progress file deleted; translation will restart.")
 
+    if os.path.exists(summary_file):
+        response = input(
+            "A summary file has been found. Do you want use it?(y/n): ")
+        if response.lower() not in ['y', 'yes', '是']:
+            os.remove(summary_file)
+            print("Progress file deleted; translation will restart.")
+
     print("Starting translation...")
-    success = translator.translate_json_file(input_file, output_file, progress_file)
+    success = translator.translate_json_file(input_file, output_file, progress_file, summary_file)
 
     if success:
         print("Translation successfully completed!")
