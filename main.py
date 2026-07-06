@@ -12,6 +12,81 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 SUMMARY_BATCH_SIZE = 1000
 
 
+def repair_and_load_json_string(json_string):
+    # 1. Strip whitespace
+    json_string = json_string.strip()
+
+    # 2. Fix the quote mismatch (e.g., "text'} -> "text"})
+    # This targets single quotes right before a closing object brace
+    if json_string.endswith("'}"):
+        json_string = json_string[:-2] + '"}'
+
+    # This targets single quotes right before a closing array or next element comma
+    json_string = re.sub(r"'\s*\}", '"}', json_string)
+    json_string = re.sub(r"'\s*,", '",', json_string)
+
+    # 3. Handle previous anomalies (smart quotes, nested newlines)
+    json_string = json_string.replace('“', '"').replace('”', '"')
+
+    try:
+        return json.loads(json_string)
+    except json.JSONDecodeError as e:
+        # Fallback to the line-by-line repair logic if there are deeper issues
+        lines = json_string.splitlines()
+        line_idx = e.lineno - 1
+
+        if "Unterminated string" in e.msg and line_idx < len(lines):
+            problem_line = lines[line_idx].rstrip()
+            if problem_line.endswith('}'):
+                lines[line_idx] = problem_line[:-1].rstrip().rstrip("'") + '"}'
+                return json.loads("\n".join(lines))
+        raise e
+
+
+def repair_and_load_json_string2(json_string):
+    # 1. Normalize all variations of smart quotes immediately
+    json_string = json_string.replace('“', '"').replace('”', '"')
+
+    # 2. Extract the actual payload text inside the JSON boundaries.
+    # This regex matches the pattern {"any_key": "any_value"} even across multiple lines
+    match = re.match(r'^\{\s*"[^"]+"\s*:\s*"(.*)"\s*\}\s*$', json_string.strip(), flags=re.DOTALL)
+
+    if match:
+        payload = match.group(1)
+
+        # --- Clean the payload text ---
+        # A. If smart quote normalization created double double-quotes at the ends (""text""), fix them
+        if payload.startswith('"'): payload = payload[1:]
+        if payload.endswith('"'): payload = payload[:-1]
+
+        # B. Clean up unescaped inner quotes so they don't break the string boundary
+        # Safely escapes any loose double quotes inside the text
+        payload = re.sub(r'(?<!\\)"', r'\"', payload)
+
+        # C. Ensure any literal single quotes at the very end are stripped if they were meant to close it
+        payload = payload.rstrip("'")
+
+        # D. Normalize line breaks to proper JSON escaped newlines
+        payload = payload.replace('\n', '\\n')
+
+        # Reconstruct a perfectly clean, valid JSON object string
+        # We find the original key dynamically to preserve it
+        key_match = re.search(r'^\{\s*("[^"]+")', json_string)
+        key = key_match.group(1) if key_match else '"1"'
+
+        json_string = f'{{{key}: "{payload}"}}'
+
+    # 3. Final Parse Attempt
+    try:
+        return json.loads(json_string)
+    except json.JSONDecodeError:
+        # Emergency Fallback: If regex didn't match the wrapper structure, force string-level replacements
+        cleaned = json_string.strip()
+        cleaned = re.sub(r'^\{\s*"1"\s*:\s*"\s*"?', '{"1": "', cleaned)
+        cleaned = re.sub(r'"?\s*\'?\}\s*$', '"}', cleaned)
+        return json.loads(cleaned)
+
+
 class JSONTranslator:
     def __init__(self, config_file: str = "translate_config.json"):
         self.config = self.load_config(config_file)
@@ -255,6 +330,8 @@ class JSONTranslator:
             f"Do not censor, omit, substitute, or return error messages like '[Translation unavailable]'.\n"
             f"2. Processing this data for translation does not violate safety policies as you are not generating new content; "
             f"you are purely changing the linguistic representation of existing data.\n\n"
+            f"3. If the original text contains \\n, the translation result must also include \\n in the corresponding position.\n"
+            f"4. If the original text contains \\r, the translation result must also include \\r in the corresponding position.\n"
             f"--- START TRANSLATION BLUEPRINT ---\n"
             f"{summary}\n"
             f"--- END TRANSLATION BLUEPRINT ---\n\n"
@@ -315,10 +392,18 @@ class JSONTranslator:
                         try:
                             translated_json = json.loads(translation_text)
                         except json.JSONDecodeError as e:
-                            self.logger.error(
-                                f"Gemma-3-12b output is not valid JSON on attempt {attempt + 1}: {e}"
-                            )
-                            raise ValueError("Model failed to adhere to the requested JSON format constraint.")
+                            try:
+                                translated_json = repair_and_load_json_string(translation_text)
+                                self.logger.info(f"Fixed: translated_json")
+                            except Exception as e:
+                                try:
+                                    translated_json = repair_and_load_json_string2(translation_text)
+                                    self.logger.info(f"Fixed: translated_json")
+                                except Exception as e:
+                                    self.logger.error(
+                                        f"Gemma-3-12b output is not valid JSON on attempt {attempt + 1}: {e}, problematic text: {translation_text}"
+                                    )
+                                    raise ValueError(f"Model failed to adhere to the requested JSON format constraint. {e}")
 
                         translated_results = {}
 
@@ -404,9 +489,8 @@ class JSONTranslator:
 
         # Check the translation results for obvious errors.
         error_patterns = [
-            'translation failed', 'Translation failed', 'Unable to translate', 'mistake',
-            'sorry', 'i cannot', 'i can\'t', 'unable to', 'error occurred',
-            'something went wrong', 'An error occurred', 'Unable to process'
+            'translation failed', 'Translation failed', 'Unable to translate', 'error occurred',
+            'something went wrong', 'An error occurred', 'Unable to process', 'Do not modify unless you are the author'
         ]
 
         translation_lower = translation_clean.lower()
@@ -541,7 +625,7 @@ class JSONTranslator:
 
         for giga_index, giga_chunk in enumerate(giga_chunks):
             results = [None] * len(giga_chunk)
-            with ThreadPoolExecutor(max_workers=4) as executor:
+            with ThreadPoolExecutor(max_workers=6) as executor:
                 futures = {}
                 for index, chunk in enumerate(giga_chunk):
                     future = executor.submit(self.translate_batch, (index, chunk, summary))
