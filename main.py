@@ -1,15 +1,116 @@
 import json
 import re
+import ast
+import math
 
 import requests
 import time
 import os
 from typing import Dict, Any
+from json_repair import repair_json
 import logging
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 SUMMARY_BATCH_SIZE = 1000
+BATCH_SIZE = 2
+
+
+class TokenAwareChunker:
+    def __init__(self, n_ctx=65536, reasoning_buffer=8000, expansion_factor=1.2, model_name=None):
+        """
+        :param n_ctx: Total server context window (e.g. 65536 or 131072)
+        :param reasoning_buffer: Max tokens reserved for model reasoning
+        :param expansion_factor: Expected length growth during translation (1.1-1.3)
+        :param model_name: Optional HF model name for exact tokenizer (e.g., 'google/gemma-2-9b')
+        """
+        self.n_ctx = n_ctx
+        self.tokenizer = None
+
+        if model_name:
+            try:
+                from transformers import AutoTokenizer
+                self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+            except Exception as e:
+                print(f"Warning: Could not load tokenizer ({e}). Falling back to heuristic estimation.")
+
+        # Calculate max input tokens per chunk
+        available_output_space = (n_ctx - reasoning_buffer) / (1 + expansion_factor)
+        # Apply a 10% safety margin
+        self.max_chunk_tokens = int(available_output_space * 0.9)
+
+    def estimate_tokens(self, text: str) -> int:
+        """Estimates or counts tokens for a string."""
+        if self.tokenizer:
+            return len(self.tokenizer.encode(text, add_special_tokens=False))
+        # Heuristic fallback: ~3.5 chars per token for English/code, ~1.5-2 chars for CJK
+        return int(len(text) / 3.0)
+
+    def create_chunks(self, lst: list[str]) -> list[list[str]]:
+        """
+        Groups list items into chunks such that no chunk exceeds self.max_chunk_tokens.
+        """
+        chunks = []
+        current_chunk = []
+        current_tokens = 0
+
+        for item in lst:
+            item_tokens = self.estimate_tokens(item)
+
+            # If a single item is larger than the entire allowed chunk size
+            if item_tokens > self.max_chunk_tokens:
+                # Flush existing chunk
+                if current_chunk:
+                    chunks.append(current_chunk)
+                    current_chunk = []
+                    current_tokens = 0
+
+                # Force split the oversized single item by line/paragraph
+                sub_items = item.split("\n")
+                if len(sub_items) > 1:
+                    sub_chunks = self.create_chunks(sub_items)
+                    for sc in sub_chunks:
+                        chunks.append(sc)
+                else:
+                    # Hard fallback for an unsplitable huge block
+                    chunks.append([item])
+                continue
+
+            # If adding item exceeds the limit, seal current chunk and start new one
+            if current_tokens + item_tokens > self.max_chunk_tokens:
+                chunks.append(current_chunk)
+                current_chunk = [item]
+                current_tokens = item_tokens
+            else:
+                current_chunk.append(item)
+                current_tokens += item_tokens
+
+        if current_chunk:
+            chunks.append(current_chunk)
+
+        return chunks
+
+    def process_all(self, lst: list[str], process_fn) -> list[str]:
+        """
+        Splits text list into safe token chunks and processes each chunk.
+        :param lst: List of text blocks/strings to translate/summarize.
+        :param process_fn: Function that sends text to LLM (takes `\n`.join(chunk)).
+        """
+        chunks = self.create_chunks(lst)
+        results = []
+
+        for i, chunk in enumerate(chunks, 1):
+            chunk_text = "\n".join(chunk)
+            estimated_tokens = self.estimate_tokens(chunk_text)
+            print(f"[Chunk {i}/{len(chunks)}] Tokens: ~{estimated_tokens} / Max: {self.max_chunk_tokens}")
+
+            result = process_fn(chunk_text)
+            if result:
+                results.append(result)
+            else:
+                print(f"[Warning] Chunk {i} returned None. Consider reducing max_chunk_tokens further.")
+
+        return results
 
 
 def repair_and_load_json_string(json_string):
@@ -87,8 +188,24 @@ def repair_and_load_json_string2(json_string):
         return json.loads(cleaned)
 
 
+def parse_llm_json_response(response_text: str) -> dict:
+    if not response_text or not response_text.strip():
+        raise ValueError("Response text is empty or whitespace.")
+
+    # repair_json automatically fixes unescaped inner quotes, raw linebreaks,
+    # single quotes, and markdown backticks.
+    repaired_json_str = repair_json(response_text)
+
+    parsed = json.loads(repaired_json_str)
+    if isinstance(parsed, dict):
+        return parsed
+
+    raise ValueError("Parsed output is not a dictionary.")
+
+
 class JSONTranslator:
     def __init__(self, config_file: str = "translate_config.json"):
+        self.chunker = TokenAwareChunker()
         self.config = self.load_config(config_file)
         logging.basicConfig(
             level=logging.INFO,
@@ -122,11 +239,13 @@ class JSONTranslator:
     def summarize(self, item) -> Any:
         prompt = ("""
         You are an expert translation strategist. Analyze the following raw text and create a highly condensed, dense "Translation Blueprint" for another AI to use as a style guide. 
-
+        
+        Keep your step-by-step thinking brief and concise before generating the response.
+        
         Extract only the core information required to ensure flawless, consistent translation across batches. Structure your output exactly like this:
 
         1. CORE CONTEXT & TONE: (e.g., "A dark sci-fi story. Use an informal, gritty tone. Characters use military jargon.")
-        2. CHARACTER/ENTITY PROFILES: (List key characters, genders, and relationships so pronouns and verb inflections match across batches.)
+        2. CHARACTER/ENTITY PROFILES: (List key characters, their name in original language, genders, ages and relationships so pronouns and verb inflections match across batches.)
         3. Respond ONLY with text that will be passed to another AI. Do not include markdown formatting or explanations.
         """)
 
@@ -136,8 +255,9 @@ class JSONTranslator:
                 {"role": "system", "content": prompt},
                 {"role": "user", "content": item}
             ],
-            'max_tokens': 6000,
-            'temperature': 0.0,
+            'max_tokens': 16384,
+            'temperature': 0.6,
+            'top_p': 0.90,
             'safety_settings': [
                 {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
                 {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
@@ -168,7 +288,9 @@ class JSONTranslator:
 
         if response.status_code == 200:
             result = response.json()
-            return result['choices'][0]['message']['content'].strip()
+            result_stripped = result['choices'][0]['message']['content'].strip()
+            self.logger.info(result_stripped)
+            return result_stripped
         return None
 
     def summarize_summaries(self, item) -> Any:
@@ -177,12 +299,14 @@ class JSONTranslator:
         Analyze every instance of 'CORE CONTEXT & TONE' and combine them together.
         Analyze every instance of 'CHARACTER/ENTITY PROFILES' and merge them together combining reoccurring characters.
         Pay high attention on protagonist characters. Try to keep as much information about protagonist and core characters.
-        Try to keep list of characters compact. It is OK to exclude characters that doesn't seem as story relevant.
+        Try to keep list of characters compact. Keep characters that appears between multiple summaries. Don't keep notes on nameless gunts, monsters etc.
+        
+        Keep your step-by-step thinking brief and concise before generating the response.
         
         Extract only the core information required to ensure flawless, consistent translation across batches. Structure your output exactly like this:
 
         1. CORE CONTEXT & TONE: (e.g., "A dark sci-fi story. Use an informal, gritty tone. Characters use military jargon.")
-        2. CHARACTER/ENTITY PROFILES: (List key characters, genders, and relationships so pronouns and verb inflections match across batches.)
+        2. CHARACTER/ENTITY PROFILES: (List key characters, their name in original language, genders, ages and relationships so pronouns and verb inflections match across batches.)
         3. Respond ONLY with text that will be passed to another AI. Do not include markdown formatting or explanations.
         """)
 
@@ -192,8 +316,10 @@ class JSONTranslator:
                 {"role": "system", "content": prompt},
                 {"role": "user", "content": item}
             ],
-            'max_tokens': 8000,
-            'temperature': 0.0,
+            'max_tokens': 16384,
+            'temperature': 0.6,
+            'top_p': 0.90,
+            # 'top_k': 64,
             'safety_settings': [
                 {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
                 {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
@@ -224,52 +350,84 @@ class JSONTranslator:
 
         if response.status_code == 200:
             result = response.json()
-            return result['choices'][0]['message']['content'].strip()
+            result_stripped = result['choices'][0]['message']['content'].strip()
+            self.logger.info(result_stripped)
+            return result_stripped
         return None
 
     def split_and_summarize(self, lst):
+        # Initialize chunker for 64k context
+        chunker = TokenAwareChunker(
+            n_ctx=65536,
+            reasoning_buffer=8000,  # Headroom for model thinking
+            expansion_factor=1.2  # Translation length expansion factor
+        )
 
-        result = self.summarize("\n".join(lst))
+        # Your existing LLM call wrapper
+        def my_llm_call(text_block):
+            return self.summarize(text_block)
 
-        if result is not None:
-            return [result]
+        # Process safely in pre-calculated batches
+        final_results = chunker.process_all(lst, my_llm_call)
+        return final_results
 
-        if len(lst) == 1:
-            return []
-
-        # 4. Split the list in half
-        mid = len(lst) // 2
-        left_half = lst[:mid]
-        right_half = lst[mid:]
-
-        # 5. Recursively process both halves and combine the accumulated results
-        return self.split_and_summarize(left_half) + self.split_and_summarize(right_half)
-
-    def split_and_summarize_summaries(self, lst):
-        # Base case: if the list is empty, there is nothing to process
+    def reduce_summaries(self, lst: list[str], max_depth: int = 5) -> str:
+        """
+        Hierarchically combines a list of summary strings into a single final summary
+        while guaranteeing that token context limits are never exceeded.
+        """
         if not lst:
-            return []
+            return ""
 
-        # 1. Try to process the current list/chunk with method_2
-        result = self.summarize_summaries("\n".join(lst))
-
-        # 2. If it succeeds (not None), wrap it in a list and return it
-        if result is not None:
-            return [result]
-
-        # 3. If it returns None, check if we can actually split it
+        # If there is only one item, check if it needs a final pass or can be returned directly
         if len(lst) == 1:
-            # Atomic element failed; we can't split a single item further.
-            # Returning an empty list drops the bad item.
-            return []
+            return lst[0]
 
-        # 4. Split the list in half
-        mid = len(lst) // 2
-        left_half = lst[:mid]
-        right_half = lst[mid:]
+        current_items = lst
+        depth = 0
 
-        # 5. Recursively process both halves and combine the accumulated results
-        return self.split_and_summarize_summaries(left_half) + self.split_and_summarize_summaries(right_half)
+        # Loop hierarchically until we reduce down to 1 summary or hit max depth
+        while len(current_items) > 1 and depth < max_depth:
+            depth += 1
+            print(f"[Hierarchical Pass {depth}] Combining {len(current_items)} summary items...")
+
+            # 1. Group current summaries into token-safe chunks
+            chunks = self.chunker.create_chunks(current_items)
+
+            # Prevent infinite loop if items cannot be grouped further
+            if len(chunks) == len(current_items) and all(len(c) == 1 for c in chunks):
+                print("[Warning] Summaries cannot be condensed further without exceeding chunk limits.")
+                break
+
+            next_level_summaries = []
+
+            # 2. Summarize each chunk
+            for i, chunk in enumerate(chunks, 1):
+                chunk_text = "\n".join(chunk)
+                summary = self.summarize_summaries(chunk_text)
+
+                if summary:
+                    next_level_summaries.append(summary)
+                else:
+                    # Fallback if API returns None: keep individual chunk items for next pass
+                    print(f"[Warning] summarize_summaries failed for chunk {i}. Keeping unsummarized text.")
+                    next_level_summaries.extend(chunk)
+
+            # Safety check: if no reduction occurred in this pass, break out
+            if len(next_level_summaries) >= len(current_items):
+                print("[Info] Token limit reached or text could not be further reduced.")
+                current_items = next_level_summaries
+                break
+
+            current_items = next_level_summaries
+
+        # Return single final summary or join remaining items
+        if len(current_items) == 1:
+            return current_items[0]
+        else:
+            final_concat = "\n\n".join(current_items)
+            final_summary = self.summarize_summaries(final_concat)
+            return final_summary if final_summary else final_concat
 
     def translate_batch(self, item) -> tuple:
 
@@ -335,6 +493,15 @@ class JSONTranslator:
             f"--- START TRANSLATION BLUEPRINT ---\n"
             f"{summary}\n"
             f"--- END TRANSLATION BLUEPRINT ---\n\n"
+            f"[REASONING RULES]:\n"
+            f"- Keep your internal thinking extremely brief (under 100 words).\n"
+            f"- Quickly verify key names and Japanese translation context in 3 short bullet points max.\n"
+            f"- Immediately exit thinking mode and output the JSON result.\n\n"
+            f"[STRICT OUTPUT FORMAT RULES]:\n"
+            f"- Output MUST be valid, parseable JSON only.\n"
+            f"- MUST use standard JSON double quotes (\") for all keys and string values. Never use single quotes (').\n"
+            f"- Do NOT output Python dictionary format.\n"
+            f"- Do NOT include markdown code blocks (```json), explanations, or preamble.\n\n"
             f"Rules:\n"
             f"1. Never merge keys or omit keys. The output JSON must have identical keys to the input JSON.\n"
             f"2. Translate sentence fragments exactly as fragments. Do not combine text across different keys.\n"
@@ -357,8 +524,10 @@ class JSONTranslator:
                 {"role": "system", "content": prompt},
                 {"role": "user", "content": json_batch}
             ],
-            'max_tokens': 4000,
-            'temperature': 0.0,
+            'max_tokens': 32768,
+            'temperature': 0.65,
+            'top_p': 0.9,
+            "frequency_penalty": 0.2,
             'safety_settings': [
                 {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
                 {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
@@ -382,28 +551,14 @@ class JSONTranslator:
                     if 'choices' in result and len(result['choices']) > 0:
                         translation_text = result['choices'][0]['message']['content'].strip()
 
-                        # Securely sanitize markdown block wrappers without using literal markdown sequence in code
-                        markdown_marker = chr(96) * 3
-                        if translation_text.startswith(markdown_marker):
-                            translation_text = translation_text.strip(markdown_marker).strip()
-                            if translation_text.lower().startswith("json"):
-                                translation_text = translation_text[4:].strip()
-
+                        # Robust single-pass JSON parse and repair
                         try:
-                            translated_json = json.loads(translation_text)
-                        except json.JSONDecodeError as e:
-                            try:
-                                translated_json = repair_and_load_json_string(translation_text)
-                                self.logger.info(f"Fixed: translated_json")
-                            except Exception as e:
-                                try:
-                                    translated_json = repair_and_load_json_string2(translation_text)
-                                    self.logger.info(f"Fixed: translated_json")
-                                except Exception as e:
-                                    self.logger.error(
-                                        f"Gemma-3-12b output is not valid JSON on attempt {attempt + 1}: {e}, problematic text: {translation_text}"
-                                    )
-                                    raise ValueError(f"Model failed to adhere to the requested JSON format constraint. {e}")
+                            translated_json = parse_llm_json_response(translation_text)
+                        except Exception as e:
+                            self.logger.error(
+                                f"Gemma output is not valid JSON on attempt {attempt + 1}: {e}, problematic text: {translation_text}"
+                            )
+                            raise ValueError(f"Model failed to adhere to JSON format: {e}")
 
                         translated_results = {}
 
@@ -414,14 +569,17 @@ class JSONTranslator:
                                 translated_line = str(translated_json[lookup_key]).strip()
                                 translated_line = translated_line.replace('\\n', '\n').replace('\\t', '\t')
 
+                                # Validate string content only
                                 if self.is_valid_translation(original_value, translated_line):
                                     translated_results[key] = translated_line
                                     self.logger.info(
-                                        f"Batch translation successful: {original_value} -> {translated_line}")
+                                        f"Batch translation successful: {original_value} -> {translated_line}"
+                                    )
                                 else:
                                     translated_results[key] = original_value
                                     self.logger.warning(
-                                        f"Translation validation failed. Retaining original: {original_value}")
+                                        f"Translation validation failed. Retaining original: {original_value} -> {translated_line}"
+                                    )
                             else:
                                 translated_results[key] = original_value
                                 self.logger.warning(
@@ -447,11 +605,13 @@ class JSONTranslator:
 
             except requests.exceptions.Timeout:
                 self.logger.warning(
-                    f"Request timed out. Retrying attempt {attempt + 1}/{self.config['max_retries']}...")
+                    f"Request timed out. Retrying attempt {attempt + 1}/{self.config['max_retries']}..."
+                )
 
             except requests.exceptions.ConnectionError:
                 self.logger.warning(
-                    f"Network connection failed. Retrying attempt {attempt + 1}/{self.config['max_retries']}...")
+                    f"Network connection failed. Retrying attempt {attempt + 1}/{self.config['max_retries']}..."
+                )
 
             except Exception as e:
                 self.logger.error(f"Unexpected exception encountered during batch processing: {str(e)}")
@@ -478,33 +638,45 @@ class JSONTranslator:
 
         return text
 
-    def is_valid_translation(self, original: str, translation: str) -> bool:
+    def is_valid_translation(self, original: str, translation: str, is_json: bool = True) -> bool:
+        # 1. Check for empty or whitespace-only response
         if not translation or not translation.strip():
-            print(f"The translation result is empty or contains only whitespace characters.")
+            print("Validation Failure: Translation result is empty or whitespace.")
             return False
 
-        # Comparison after removing whitespace characters
         original_clean = original.strip()
         translation_clean = translation.strip()
 
-        # Check the translation results for obvious errors.
+        # 2. Case-insensitive error & LLM meta-talk pattern check
+        # MUST be strictly lowercase
         error_patterns = [
-            'translation failed', 'Translation failed', 'Unable to translate', 'error occurred',
-            'something went wrong', 'An error occurred', 'Unable to process', 'Do not modify unless you are the author'
+            'translation failed',
+            'unable to translate',
+            'error occurred',
+            'something went wrong',
+            'unable to process',
+            'as an ai',
+            'i cannot translate',
+            'here is the translation',
+            'translator note:',
+            'note from the translator:',
+            'note: here is',
+            'note: the above',
         ]
 
         translation_lower = translation_clean.lower()
         for pattern in error_patterns:
             if pattern in translation_lower:
-                print(f"The translation results contain error messages.")
+                print(f"Validation Failure: Detected error message or LLM meta-text: '{pattern}'")
                 return False
 
-        # Check if the translation is too long (it may contain errors or explanations).
-        if len(translation_clean) > len(original_clean) * 10:  # Allow for larger length differences
-            print(f"Translation result length abnormal")
+        # 3. Safe Length Check (Includes a 100-character baseline floor)
+        max_allowed = max(len(original_clean) * 10, 100)
+        if len(translation_clean) > max_allowed:
+            print(f"Validation Failure: Result abnormally long ({len(translation_clean)} chars > {max_allowed} max).")
             return False
 
-        # All other cases are considered valid.
+        # DO NOT perform json.loads() here! translated_line is plain text.
         return True
 
     def save_progress(self, translated_data: Dict[str, str], progress_file: str):
@@ -564,23 +736,20 @@ class JSONTranslator:
         self.logger.info(f"Loaded {len(original_data)} records")
 
         if not os.path.exists(summary_file):
-            summary_batches = self.split_and_summarize(list(original_data.values()))
+            # 1. Chunk and summarize original data safely without exceeding model limits
+            raw_texts = list(original_data.values())
+            summary_batches = self.chunker.process_all(raw_texts, self.summarize)
+            self.logger.info(f"Generated {len(summary_batches)} section summaries.")
 
-            self.logger.info(f"summary_batches {len(summary_batches)}")
+            # 2. Hierarchically reduce the section summaries into a single final summary
+            summary = self.reduce_summaries(summary_batches)
+            self.logger.info(f"Final Summary generated successfully: {len(summary)} characters.")
 
-            while True:
-                self.logger.info(f"summaries {len(summary_batches)}")
-                summary = self.summarize_summaries("\n".join(summary_batches))
-                if summary:
-                    self.logger.info(f"Summary: {summary}")
-                    break
-                else:
-                    summary_batches = self.split_and_summarize_summaries(summary_batches)
-
-            with open("summary.txt", "w", encoding="utf-8") as file:
+            # 3. Save to file
+            with open(summary_file, "w", encoding="utf-8") as file:
                 file.write(summary)
 
-            input("Summary is saved to file. Review it and press Enter to continue...")
+            input(f"Summary is saved to '{summary_file}'. Review it and press Enter to continue...")
 
         with open("summary.txt", "r", encoding="utf-8") as f:
             summary = f.read()
@@ -621,21 +790,32 @@ class JSONTranslator:
 
         self.logger.info(f"Batches count: {len(all_batches)}")
 
-        giga_chunks = [all_batches[i:i + 10] for i in range(0, len(all_batches), 10)]
+        giga_chunks = [all_batches[i:i + 2] for i in range(0, len(all_batches), 2)]
 
         for giga_index, giga_chunk in enumerate(giga_chunks):
             results = [None] * len(giga_chunk)
-            with ThreadPoolExecutor(max_workers=6) as executor:
-                futures = {}
-                for index, chunk in enumerate(giga_chunk):
-                    future = executor.submit(self.translate_batch, (index, chunk, summary))
-                    futures[future] = index
 
-                for future in as_completed(futures):
-                    idx = futures[future]
-                    result = future.result()
-                    results[idx] = result
-                    print(f"Batch translation successful, completed {giga_index}: {idx}")
+            with ThreadPoolExecutor(max_workers=BATCH_SIZE) as executor:
+                for i in range(0, len(giga_chunk), BATCH_SIZE):
+                    sub_batch = giga_chunk[i: i + BATCH_SIZE]
+                    futures = {}
+
+                    # 1. Submit workers with a staggered delay
+                    for offset, chunk in enumerate(sub_batch):
+                        idx = i + offset
+                        future = executor.submit(self.translate_batch, (idx, chunk, summary))
+                        futures[future] = idx
+
+                        # Delay the submission of the next worker in this batch
+                        if offset < len(sub_batch) - 1:
+                            time.sleep(0.2)
+
+                    # 2. Block until the entire sub-batch completes
+                    for future in as_completed(futures):
+                        idx = futures[future]
+                        result = future.result()
+                        results[idx] = result
+                        print(f"Batch translation successful, completed {giga_index}: {idx}")
 
             for result in results:
                 if result is not None:
@@ -643,6 +823,7 @@ class JSONTranslator:
                         translated_data.update(result)
                     except Exception as e:
                         print(result)
+                        print(e)
             self.save_progress(translated_data, progress_file)
 
         with open(output_file, 'w', encoding='utf-8') as f:
