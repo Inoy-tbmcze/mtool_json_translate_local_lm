@@ -13,7 +13,7 @@ from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 SUMMARY_BATCH_SIZE = 1000
-BATCH_SIZE = 2
+WORKER_COUNT = 4
 
 
 class TokenAwareChunker:
@@ -790,14 +790,14 @@ class JSONTranslator:
 
         self.logger.info(f"Batches count: {len(all_batches)}")
 
-        giga_chunks = [all_batches[i:i + 2] for i in range(0, len(all_batches), 2)]
+        giga_chunks = [all_batches[i:i + WORKER_COUNT] for i in range(0, len(all_batches), WORKER_COUNT)]
 
         for giga_index, giga_chunk in enumerate(giga_chunks):
             results = [None] * len(giga_chunk)
 
-            with ThreadPoolExecutor(max_workers=BATCH_SIZE) as executor:
-                for i in range(0, len(giga_chunk), BATCH_SIZE):
-                    sub_batch = giga_chunk[i: i + BATCH_SIZE]
+            with ThreadPoolExecutor(max_workers=WORKER_COUNT) as executor:
+                for i in range(0, len(giga_chunk), WORKER_COUNT):
+                    sub_batch = giga_chunk[i: i + WORKER_COUNT]
                     futures = {}
 
                     # 1. Submit workers with a staggered delay
