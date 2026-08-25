@@ -17,7 +17,7 @@ WORKER_COUNT = 4
 
 
 class TokenAwareChunker:
-    def __init__(self, n_ctx=65536, reasoning_buffer=8000, expansion_factor=1.2, model_name=None):
+    def __init__(self, n_ctx=131072, reasoning_buffer=8000, expansion_factor=1.2, model_name=None):
         """
         :param n_ctx: Total server context window (e.g. 65536 or 131072)
         :param reasoning_buffer: Max tokens reserved for model reasoning
