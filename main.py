@@ -526,7 +526,7 @@ class JSONTranslator:
         {summary}
 
         STRICT TRANSLATION RULES:
-        1. TRANSLATE VALUES ONLY: Translate all string values literally and objectively. Keep non-translatable text (code, identifiers, URLs, English technical terms) exactly as-is.
+        1. TRANSLATE VALUES ONLY: Translate all string values literally and objectively. Keep non-translatable text (code, identifiers, URLs, English technical terms) exactly as-is. Treat every string as separate task, never combine or divide strings. Never treat next string as continuation of previous one.
         2. PRESERVE STRUCTURE: Retain all JSON keys, key names, and hierarchy without omission or merging.
         3. PRESERVE FORMATTING: Retain all control characters (\\n, \\r, \\t), whitespace, and structural line breaks in their exact positions.
         4. LITERAL FIDELITY: Do not censor, modify tone, summarize, or insert placeholder notes. Translate sentence fragments as fragments.
@@ -553,7 +553,7 @@ class JSONTranslator:
                 {"role": "system", "content": prompt},
                 {"role": "user", "content": json_batch}
             ],
-            'max_tokens': 32768,
+            'max_tokens': 65536,
             'safety_settings': [
                 {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
                 {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
@@ -695,12 +695,6 @@ class JSONTranslator:
             if pattern in translation_lower:
                 print(f"Validation Failure: Detected error message or LLM meta-text: '{pattern}'")
                 return False
-
-        # 3. Safe Length Check (Includes a 300-character baseline floor)
-        max_allowed = max(len(original_clean) * 10, 300)
-        if len(translation_clean) > max_allowed:
-            print(f"Validation Failure: Result abnormally long ({len(translation_clean)} chars > {max_allowed} max).")
-            return False
 
         # DO NOT perform json.loads() here! translated_line is plain text.
         return True

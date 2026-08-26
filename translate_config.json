@@ -7,7 +7,7 @@
     "max_retries": 10,
     "retry_delay": 0.1,
     "request_timeout": 1200,
-    "batch_size": 200,
+    "batch_size": 100,
     "save_interval": 1,
     "api_type": "lmstudio"
 }

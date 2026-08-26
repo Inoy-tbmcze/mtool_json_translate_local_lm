@@ -3,8 +3,9 @@
     "api_key": "lm-studio",
     "model": "gemma-4-e4b",
     "batch_size": 30,
-    "min_japanese_ratio": 0.8,
+    "request_timeout": 60,
     "max_workers": 6,
     "save_interval": 30,
-    "input_filename": "ManualTransFile.json"
+    "input_filename": "xxx.json"
 }
+
