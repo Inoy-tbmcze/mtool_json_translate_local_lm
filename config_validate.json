@@ -2,10 +2,10 @@
     "api_endpoint": "http://127.0.0.1:1234/v1/chat/completions",
     "api_key": "lm-studio",
     "model": "gemma-4-e4b",
-    "batch_size": 30,
+    "batch_size": 1,
     "request_timeout": 60,
-    "max_workers": 6,
-    "save_interval": 30,
-    "input_filename": "xxx.json"
+    "max_workers": 40,
+    "save_interval": 120,
+    "input_filename": "translated_20260826_221112.json"
 }
 

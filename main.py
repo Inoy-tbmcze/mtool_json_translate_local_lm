@@ -870,7 +870,7 @@ def main():
         return
 
     # Set file path
-    input_file = "ManualTransFile_cleaned.json"
+    input_file = "translated_20260826_221112_retranslate.json"
     output_file = f"translated_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
     progress_file = "translation_progress.json"
     summary_file = "summary.txt"
