@@ -2,9 +2,9 @@
     "api_endpoint": "http://127.0.0.1:1234/v1/chat/completions",
     "api_key": "lm-studio",
     "model": "qwen3-4b-instruct",
-    "batch_size": 40,
+    "batch_size": 30,
+    "min_japanese_ratio": 0.8,
     "max_workers": 6,
-    "save_interval": 24,
+    "save_interval": 30,
     "input_filename": "ManualTransFile.json"
 }
-

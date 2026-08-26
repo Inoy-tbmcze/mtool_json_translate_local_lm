@@ -1,12 +1,11 @@
 """
-Two-Stage Hybrid Cleaning Script for Game Localization JSON (V5 - High Accuracy)
+Two-Stage Hybrid Cleaning Script for Game Localization JSON (V6 - Gemma 4 Optimized)
 ------------------------------------------------------------------------------------------
 Stage 1:
-  - Strict Rule-Based Junk Filtering (quarantines code, non-Japanese lines, file paths, comment syntax).
-  - NO blind auto-keeping: All Japanese lines are sent to Stage 2 LLM to distinguish 
-    player-facing text from developer specs/notes/comments.
+  - Fast rule-based junk filtering (code, non-Japanese lines, file paths, comment syntax,
+    low Japanese character ratio including custom Japanese punctuation/symbols).
 Stage 2:
-  - Multithreaded LLM classification focused on distinguishing true game content vs. internal dev text.
+  - Multithreaded classification optimized for Gemma-4-e4b (single-turn user prompt layout).
 """
 
 import json
@@ -15,8 +14,17 @@ import sys
 import threading
 import requests
 from pathlib import Path
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any, List, Tuple, Set
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# Global default threshold for Japanese character ratio (80%)
+DEFAULT_MIN_JAPANESE_RATIO = 0.8
+
+# Hardcoded fallback symbols counted as Japanese if jp_symbols.json is not found
+DEFAULT_JP_SYMBOLS = [
+    "）", "」", "…", "（", "「", "『", "』", "【", "】",
+    "・", "！", "？", "〜", "ー", "、", "。"
+]
 
 # Fantasy item & plant suffix pattern
 FANTASY_ITEM_PATTERN = re.compile(
@@ -32,7 +40,32 @@ def is_protected_game_item(text: str) -> bool:
     return False
 
 
-def load_config(config_file: str = "config.json") -> Dict[str, Any]:
+def load_japanese_symbols(symbols_filename: str = "jp_symbols.json") -> Set[str]:
+    """Loads Japanese symbols from JSON file in the script's directory, falling back to defaults."""
+    script_dir = Path(__file__).parent if '__file__' in globals() else Path.cwd()
+    symbols_path = script_dir / symbols_filename
+
+    if symbols_path.exists():
+        try:
+            with open(symbols_path, "r", encoding="utf-8") as f:
+                symbols_list = json.load(f)
+                if isinstance(symbols_list, list):
+                    print(f"--> Loaded {len(symbols_list)} Japanese symbols from '{symbols_filename}'.")
+                    return set(symbols_list)
+        except Exception as e:
+            print(f"Warning: Failed to parse '{symbols_filename}' ({e}). Using default symbols.")
+
+    print("--> Using default hardcoded Japanese symbol set.")
+    return set(DEFAULT_JP_SYMBOLS)
+
+
+def build_japanese_regex(symbols: Set[str]) -> re.Pattern:
+    """Builds regex matching Hiragana, Katakana, Kanji, and approved Japanese symbols."""
+    escaped_symbols = "".join(re.escape(s) for s in symbols)
+    return re.compile(rf"[\u3040-\u30ff\u4e00-\u9faf{escaped_symbols}]")
+
+
+def load_config(config_file: str = "cleanup_config.json") -> Dict[str, Any]:
     """Loads configuration file and applies defaults matching your translation pipeline."""
     config_path = Path(__file__).parent / config_file if '__file__' in globals() else Path(config_file)
     if not config_path.exists():
@@ -44,21 +77,31 @@ def load_config(config_file: str = "config.json") -> Dict[str, Any]:
 
     config.setdefault("request_timeout", 60)
     config.setdefault("batch_size", 30)
-    config.setdefault("max_workers", 4)  # Lowered to 4 to prevent LM Studio LRU slot thrashing
+    config.setdefault("max_workers", 4)
     config.setdefault("save_interval", 10)
     config.setdefault("input_filename", "game_text.json")
     config.setdefault("api_endpoint", "http://127.0.0.1:1234/v1/chat/completions")
-    config.setdefault("model", "qwen3-4b-instruct")
+    config.setdefault("model", "gemma-4-e4b")
+    config.setdefault("min_japanese_ratio", DEFAULT_MIN_JAPANESE_RATIO)
+    config.setdefault("symbols_filename", "jp_symbols.json")
 
     return config
 
 
-def has_japanese_characters(text: str) -> bool:
-    """Checks if text contains Hiragana, Katakana, or Kanji characters."""
-    return bool(re.search(r"[\u3040-\u30ff\u4e00-\u9faf]", text))
+def calculate_japanese_ratio(text: str, jp_regex: re.Pattern) -> float:
+    """Calculates the proportion of Japanese characters and custom symbols in a string."""
+    if not text:
+        return 0.0
+    jp_char_count = len(jp_regex.findall(text))
+    return jp_char_count / len(text)
 
 
-def is_ascii_art_or_symbol_heavy(text: str) -> bool:
+def has_japanese_characters(text: str, jp_regex: re.Pattern) -> bool:
+    """Checks if text contains Hiragana, Katakana, Kanji, or approved Japanese symbols."""
+    return bool(jp_regex.search(text))
+
+
+def is_ascii_art_or_symbol_heavy(text: str, jp_regex: re.Pattern) -> bool:
     if not text:
         return False
     symbol_chars = set(r"=-_*+#/\|~<>[]{}()!@$%^&:`';")
@@ -66,7 +109,7 @@ def is_ascii_art_or_symbol_heavy(text: str) -> bool:
     ratio = symbol_count / len(text)
     if len(text) > 5 and ratio > 0.5:
         return True
-    if re.search(r"(.)\1{4,}", text) and not has_japanese_characters(text):
+    if re.search(r"(.)\1{4,}", text) and not has_japanese_characters(text, jp_regex):
         return True
     return False
 
@@ -79,14 +122,23 @@ DEV_COMMENT_PATTERNS = [
 ]
 
 
-def is_stage1_junk(text: str) -> Tuple[bool, str]:
-    """Returns (is_junk, reason) based on fast regex and Japanese language presence."""
+def is_stage1_junk(
+    text: str,
+    jp_regex: re.Pattern,
+    min_ratio: float = DEFAULT_MIN_JAPANESE_RATIO
+) -> Tuple[bool, str]:
+    """Returns (is_junk, reason) based on fast regex and Japanese language presence/ratio."""
     if not text or not text.strip():
         return True, "empty_string"
 
     s = text.strip()
-    if not has_japanese_characters(s):
+    if not has_japanese_characters(s, jp_regex):
         return True, "non_japanese_text"
+
+    # Enforce minimum Japanese character ratio threshold
+    jp_ratio = calculate_japanese_ratio(s, jp_regex)
+    if jp_ratio < min_ratio:
+        return True, f"low_japanese_ratio ({jp_ratio:.1%} < {min_ratio:.1%})"
 
     # Check for obvious code comments
     for pattern in DEV_COMMENT_PATTERNS:
@@ -101,40 +153,32 @@ def is_stage1_junk(text: str) -> Tuple[bool, str]:
     if any(s.lower().endswith(ext) for ext in file_exts) or "/" in s or "\\" in s:
         return True, "filepath_or_asset"
 
-    if is_ascii_art_or_symbol_heavy(s):
+    if is_ascii_art_or_symbol_heavy(s, jp_regex):
         return True, "ascii_art_or_symbol_heavy"
 
     return False, ""
 
 
-def call_qwen_batch_classification(batch: List[Tuple[int, str, str]], config: Dict[str, Any]) -> Dict[str, bool]:
-    """Sends batch to LLM to accurately separate player-facing game text from dev notes."""
+def call_batch_classification(batch: List[Tuple[int, str, str]], config: Dict[str, Any]) -> Dict[str, bool]:
+    """Sends batch to Gemma 4 via single user turn to eliminate LM Studio template format warnings."""
     prompt_items = [f"{idx}:{text}" for idx, key, text in batch]
     items_str = "\n".join(prompt_items)
 
-    system_prompt = (
-        "You are a video game localization auditor classifying Japanese text strings.\n\n"
-        "Classify as 1 (KEEP / PLAYER-FACING):\n"
-        "- Items, consumables, crafting materials, plants, herbs (e.g., '毒消しの花', '薬草', '鉄の剣').\n"
-        "- In-game dialogue, story lines, NPC conversations.\n"
-        "- Quest text, item names, item descriptions, equipment stats.\n"
-        "- Skill names, spell descriptions, status effects.\n"
-        "- UI labels (e.g., '男', '女', '装備', '属性', '決定', 'キャンセル').\n"
-        "- Location, map, dungeon, or level names.\n\n"
-        "Classify as 0 (DISCARD / INTERNAL DEV JUNK):\n"
-        "- Developer notes, specifications, design comments (e.g., '※〜の仕様', '処理用', '実装予定').\n"
-        "- Internal tool instructions, bug reports, design memos, variable explanations.\n"
-        "- Technical system debug logs not intended for players.\n\n"
-        "IMPORTANT: If a string is a short fantasy item name, plant, or object name, ALWAYS output 1.\n\n"
-        "Output strictly a JSON object mapping each numeric ID to 1 or 0.\n"
-        'Example: {"0":1, "1":0, "2":1}'
+    combined_prompt = (
+        "Classify Japanese video game text strings into JSON mapping ID to 1 or 0.\n\n"
+        "1 (KEEP / PLAYER-FACING):\n"
+        "- Dialogue, quest text, UI labels, skills, items, plants, weapons (e.g., '毒消しの花', '薬草').\n\n"
+        "0 (DISCARD / DEV JUNK):\n"
+        "- Dev notes, specs, TODOs, comments, debug logs (e.g., '※仕様', '処理用', '実装予定').\n\n"
+        "Output ONLY a raw JSON object with keys as string IDs.\n"
+        'Example format: {"0":1, "1":0, "2":1}\n\n'
+        f"Strings to classify:\n{items_str}"
     )
 
     data = {
         "model": config["model"],
         "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"Classify these strings:\n{items_str}"}
+            {"role": "user", "content": combined_prompt}
         ],
         "temperature": 0.0,
         "max_tokens": 512
@@ -176,12 +220,12 @@ def call_qwen_batch_classification(batch: List[Tuple[int, str, str]], config: Di
 
 
 def save_progress(
-        cleaned_path: Path,
-        quarantine_path: Path,
-        checkpoint_path: Path,
-        cleaned_data: dict,
-        quarantine_data: dict,
-        lock: threading.RLock
+    cleaned_path: Path,
+    quarantine_path: Path,
+    checkpoint_path: Path,
+    cleaned_data: dict,
+    quarantine_data: dict,
+    lock: threading.RLock
 ):
     """Safely writes current results and progress checkpoints to disk using RLock."""
     with lock:
@@ -199,9 +243,15 @@ def save_progress(
             print(f" -> Error during autosave: {e}")
 
 
-def process_json_file(config_file: str = "config.json"):
+def process_json_file(config_file: str = "cleanup_config.json"):
     config = load_config(config_file)
     input_filename = config.get("input_filename", "game_text.json")
+    min_japanese_ratio = config.get("min_japanese_ratio", DEFAULT_MIN_JAPANESE_RATIO)
+    symbols_filename = config.get("symbols_filename", "jp_symbols.json")
+
+    # Load Japanese symbols and construct regex
+    jp_symbols = load_japanese_symbols(symbols_filename)
+    jp_regex = build_japanese_regex(jp_symbols)
 
     script_dir = Path(__file__).parent if "__file__" in globals() else Path.cwd()
     input_path = script_dir / input_filename
@@ -251,6 +301,7 @@ def process_json_file(config_file: str = "config.json"):
     stage2_candidates = []
 
     print(f"\n--- Stage 1: Rule-Based Junk Filtering ({len(data)} total lines) ---")
+    print(f"Minimum Japanese Character Ratio Threshold: {min_japanese_ratio:.1%}")
     stage1_junk_count = 0
 
     for key, text in data.items():
@@ -258,7 +309,7 @@ def process_json_file(config_file: str = "config.json"):
             continue
 
         check_target = text if text else key
-        is_junk, reason = is_stage1_junk(str(check_target))
+        is_junk, reason = is_stage1_junk(str(check_target), jp_regex, min_ratio=min_japanese_ratio)
 
         if is_junk:
             quarantine_data[key] = {"val": text, "stage": "Stage 1 (Rule)", "reason": reason}
@@ -268,7 +319,7 @@ def process_json_file(config_file: str = "config.json"):
             stage2_candidates.append((key, text))
 
     print(f"Stage 1 Complete:")
-    print(f" - {stage1_junk_count} code/non-Japanese/dev junk lines quarantined.")
+    print(f" - {stage1_junk_count} code/non-Japanese/low-ratio/dev junk lines quarantined.")
     print(f" - {len(stage2_candidates)} Japanese strings sent to Stage 2 LLM for accuracy auditing.")
 
     batch_size = config.get("batch_size", 30)
@@ -284,65 +335,55 @@ def process_json_file(config_file: str = "config.json"):
             batch_data = [(idx, k, v) for idx, (k, v) in enumerate(chunk)]
             batches.append(batch_data)
 
-        print(f"Total candidates: {len(stage2_candidates)} across {len(batches)} batches.")
+        wave_size = max_workers
+        waves = [batches[i : i + wave_size] for i in range(0, len(batches), wave_size)]
+
         print(
-            f"Running with max_workers={max_workers}, batch_size={batch_size}, autosave every {save_interval} batches.\n")
+            f"Processing {len(batches)} batches across {len(waves)} synchronized waves (Wave size: {wave_size})...\n"
+        )
 
         lock = threading.RLock()
         completed_batches = 0
 
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            # Group batches into synchronized waves matching max_workers
-            wave_size = config.get("max_workers", 4)
-            waves = [batches[i: i + wave_size] for i in range(0, len(batches), wave_size)]
+        for wave_idx, current_wave in enumerate(waves, 1):
+            with ThreadPoolExecutor(max_workers=len(current_wave)) as executor:
+                future_to_batch = {
+                    executor.submit(call_batch_classification, batch, config): batch
+                    for batch in current_wave
+                }
 
-            print(
-                f"Processing {len(batches)} batches across {len(waves)} synchronized waves (Wave size: {wave_size})...\n")
+                for future in as_completed(future_to_batch):
+                    batch = future_to_batch[future]
+                    results = future.result()
 
-            lock = threading.RLock()
-            completed_batches = 0
+                    with lock:
+                        for idx, key, text in batch:
+                            if is_protected_game_item(text):
+                                is_user_facing = True
+                            else:
+                                is_user_facing = results.get(key, True)
 
-            for wave_idx, current_wave in enumerate(waves, 1):
-                # Process only the current wave in parallel
-                with ThreadPoolExecutor(max_workers=len(current_wave)) as executor:
-                    future_to_batch = {
-                        executor.submit(call_qwen_batch_classification, batch, config): batch
-                        for batch in current_wave
-                    }
+                            if is_user_facing:
+                                cleaned_data[key] = text
+                            else:
+                                quarantine_data[key] = {
+                                    "val": text,
+                                    "stage": "Stage 2 (LLM)",
+                                    "reason": f"Flagged as internal dev junk by {config['model']}"
+                                }
+                            processed_keys.add(key)
 
-                    # Wait for EVERY worker in this wave to complete before starting the next wave
-                    for future in as_completed(future_to_batch):
-                        batch = future_to_batch[future]
-                        results = future.result()
+                        completed_batches += 1
 
-                        with lock:
-                            for idx, key, text in batch:
-                                # If string matches standard item/plant patterns, force keep = True
-                                if is_protected_game_item(text):
-                                    is_user_facing = True
-                                else:
-                                    is_user_facing = results.get(key, True)
-                                if is_user_facing:
-                                    cleaned_data[key] = text
-                                else:
-                                    quarantine_data[key] = {
-                                        "val": text,
-                                        "stage": "Stage 2 (LLM)",
-                                        "reason": f"Flagged as internal dev junk by {config['model']}"
-                                    }
-                                processed_keys.add(key)
+            if completed_batches % save_interval == 0 or completed_batches == len(batches):
+                print(f"Wave {wave_idx}/{len(waves)} complete. Autosaving progress...")
+                save_progress(
+                    out_cleaned_path, out_quarantine_path, checkpoint_path, cleaned_data, quarantine_data, lock
+                )
 
-                            completed_batches += 1
-
-                # Autosave after wave completes
-                if completed_batches % save_interval == 0 or completed_batches == len(batches):
-                    print(f"Wave {wave_idx}/{len(waves)} complete. Autosaving progress...")
-                    save_progress(out_cleaned_path, out_quarantine_path, checkpoint_path, cleaned_data, quarantine_data,
-                                  lock)
-
-    # Final save & sync
-    save_progress(out_cleaned_path, out_quarantine_path, checkpoint_path, cleaned_data, quarantine_data,
-                  threading.RLock())
+    save_progress(
+        out_cleaned_path, out_quarantine_path, checkpoint_path, cleaned_data, quarantine_data, threading.RLock()
+    )
 
     print("\n=== Processing Complete ===")
     print(f"Total Original Lines: {len(data)}")

@@ -1,7 +1,5 @@
 import json
 import re
-import ast
-import math
 
 import requests
 import time
@@ -698,8 +696,8 @@ class JSONTranslator:
                 print(f"Validation Failure: Detected error message or LLM meta-text: '{pattern}'")
                 return False
 
-        # 3. Safe Length Check (Includes a 100-character baseline floor)
-        max_allowed = max(len(original_clean) * 10, 100)
+        # 3. Safe Length Check (Includes a 300-character baseline floor)
+        max_allowed = max(len(original_clean) * 10, 300)
         if len(translation_clean) > max_allowed:
             print(f"Validation Failure: Result abnormally long ({len(translation_clean)} chars > {max_allowed} max).")
             return False
@@ -878,7 +876,7 @@ def main():
         return
 
     # Set file path
-    input_file = "ManualTransFile.json"
+    input_file = "ManualTransFile_cleaned.json"
     output_file = f"translated_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
     progress_file = "translation_progress.json"
     summary_file = "summary.txt"
