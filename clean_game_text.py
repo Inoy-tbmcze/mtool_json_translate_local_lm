@@ -1,11 +1,13 @@
 """
-Two-Stage Hybrid Cleaning Script for Game Localization JSON (V13 - Expanded Dialogue Whitelist)
-------------------------------------------------------------------------------------------------
+Two-Stage Hybrid Cleaning Script for Game Localization JSON (V15 - Fixed Path and Config Logic)
+-----------------------------------------------------------------------------------------------
 Stage 1:
   - Fast rule-based junk filtering.
-  - Sentence Whitelist: Automatically approves text with dialogue punctuation (。, ！, ？, …, 」, ♪, 〜).
+  - File Path and Voice Key Filtering: Quarantines audio files and paths before text checks.
+  - Sentence Whitelist: Protects full sentences automatically.
+  - Short UI Whitelist: Protects short Japanese UI labels and skill names automatically.
 Stage 2:
-  - Fast multithreaded classification for ambiguous short strings.
+  - Fast multithreaded classification for ambiguous strings.
 """
 
 import json
@@ -37,6 +39,8 @@ ENGINE_KEY_PATTERNS = [
     re.compile(r"^event\d+【\d+】$", re.IGNORECASE),
     re.compile(r"^[a-zA-Z0-9_]{4,}_[\u3040-\u30ff\u4e00-\u9faf]"),
     re.compile(r"^(?:event|pers|scene|cutscene)\d*_[0-9a-zA-Z_]+$", re.IGNORECASE),
+    re.compile(r"^\d+_\d+_[\u3040-\u30ff\u4e00-\u9faf]", re.IGNORECASE),
+    re.compile(r"^(?:sound|voice|snd|bgm|se)[\\/]", re.IGNORECASE),
 ]
 
 FANTASY_ITEM_PATTERN = re.compile(
@@ -49,14 +53,25 @@ DEV_COMMENT_PATTERNS = [
     r"^\s*(?:TODO|FIXME|DEBUG|HACK|BUG|NOTE|メモ|仮置き|未実装|要修正|後で修正|仕様|開発メモ)\s*[:：]",
 ]
 
-# Punctuation marks that identify complete Japanese dialogue, tutorial sentences, or spoken text
 JAPANESE_SENTENCE_PUNCTUATION = ("。", "！", "？", "…", "...", "」", "♪", "〜")
+
+JP_CHAR_PATTERN = re.compile(r"[\u3040-\u30ff\u4e00-\u9faf]")
 
 
 def is_protected_sentence(text: str) -> bool:
     """Returns True if text contains full Japanese sentence or dialogue punctuation."""
     s = text.strip()
     return any(symbol in s for symbol in JAPANESE_SENTENCE_PUNCTUATION)
+
+
+def is_protected_short_ui_label(text: str) -> bool:
+    """Returns True for short Japanese UI labels, skill names, and menu items."""
+    s = text.strip()
+    if 0 < len(s) <= 10 and JP_CHAR_PATTERN.search(s):
+        code_symbols = ("/", "\\", "{", "}", "=", "<", ">", "//", "/*")
+        if not any(sym in s for sym in code_symbols):
+            return True
+    return False
 
 
 def is_protected_game_item(text: str) -> bool:
@@ -70,7 +85,9 @@ def is_protected_game_item(text: str) -> bool:
 def load_japanese_symbols(symbols_filename: str = "jp_symbols.json") -> Set[str]:
     """Loads Japanese symbols from a JSON file."""
     script_dir = Path(__file__).parent if '__file__' in globals() else Path.cwd()
-    symbols_path = script_dir / symbols_filename
+    symbols_path = Path(symbols_filename)
+    if not symbols_path.is_absolute():
+        symbols_path = script_dir / symbols_path
 
     if symbols_path.exists():
         try:
@@ -91,17 +108,24 @@ def build_japanese_regex(symbols: Set[str]) -> re.Pattern:
 
 
 def load_config(config_file: str = "cleanup_config.json") -> Dict[str, Any]:
-    """Loads settings from configuration file."""
-    config_path = Path(__file__).parent / config_file if '__file__' in globals() else Path(config_file)
-    if not config_path.exists():
-        print(f"Error: Configuration file '{config_file}' not found.")
-        sys.exit(1)
+    """Loads settings from configuration file or uses defaults."""
+    script_dir = Path(__file__).parent if '__file__' in globals() else Path.cwd()
+    config_path = Path(config_file)
+    if not config_path.is_absolute():
+        config_path = script_dir / config_path
 
-    with open(config_path, "r", encoding="utf-8") as f:
-        config = json.load(f)
+    config = {}
+    if config_path.exists():
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                config = json.load(f)
+        except Exception as e:
+            print(f"Warning: Failed to read '{config_file}' ({e}). Using default settings.")
+    else:
+        print(f"Notice: Config file '{config_file}' not found. Using default settings.")
 
     config.setdefault("request_timeout", 60)
-    config.setdefault("batch_size", 50)
+    config.setdefault("batch_size", 30)
     config.setdefault("max_workers", 4)
     config.setdefault("save_interval", 10)
     config.setdefault("input_filename", "game_text.json")
@@ -141,28 +165,34 @@ def is_ascii_art_or_symbol_heavy(text: str, jp_regex: re.Pattern) -> bool:
 
 
 def is_stage1_junk(
+    key: str,
     text: str,
     jp_regex: re.Pattern,
     min_ratio: float = DEFAULT_MIN_JAPANESE_RATIO
 ) -> Tuple[bool, str]:
     """Returns (is_junk, reason) based on fast regex rules."""
-    if not text or not text.strip():
+    s = text.strip() if text else ""
+    k = key.strip() if key else ""
+
+    if not s:
         return True, "empty_string"
 
-    s = text.strip()
+    # Check key and text for paths or file extensions
+    if "/" in k or "\\" in k or "/" in s or "\\" in s:
+        return True, "filepath_or_asset"
+
+    if any(k.lower().endswith(ext) for ext in FILE_EXTENSIONS) or any(s.lower().endswith(ext) for ext in FILE_EXTENSIONS):
+        return True, "filepath_or_asset"
 
     if PURE_ASCII_IDENTIFIER_PATTERN.match(s):
         return True, "pure_ascii_identifier"
 
     for pattern in ENGINE_KEY_PATTERNS:
-        if pattern.search(s):
+        if pattern.search(k) or pattern.search(s):
             return True, "game_engine_key_or_marker"
 
     if not has_japanese_characters(s, jp_regex):
         return True, "non_japanese_text"
-
-    if any(s.lower().endswith(ext) for ext in FILE_EXTENSIONS) or "/" in s or "\\" in s:
-        return True, "filepath_or_asset"
 
     jp_ratio = calculate_japanese_ratio(s, jp_regex)
     if len(s) > 20 and jp_ratio < min_ratio:
@@ -214,7 +244,7 @@ def call_batch_classification(batch: List[Tuple[int, str, str]], config: Dict[st
         "Identify developer junk in game text.\n"
         "Return a JSON array of integer IDs to DISCARD (e.g., [0, 3]).\n"
         "Discard ONLY if 100% sure it is dev junk (TODOs, specs, debug logs, internal engine triggers).\n"
-        "Keep ALL story text, dialogue, tutorial text, menu text, and user instructions.\n"
+        "Keep ALL story text, dialogue, tutorial text, menu text, skill names, and user instructions.\n"
         "Return [] if no items are junk.\n\n"
         f"Items:\n{items_str}"
     )
@@ -289,7 +319,9 @@ def process_json_file(config_file: str = "cleanup_config.json"):
     jp_regex = build_japanese_regex(jp_symbols)
 
     script_dir = Path(__file__).parent if "__file__" in globals() else Path.cwd()
-    input_path = script_dir / input_filename
+    input_path = Path(input_filename)
+    if not input_path.is_absolute():
+        input_path = script_dir / input_path
 
     if not input_path.exists():
         print(f"Error: Input file '{input_filename}' not found at {input_path}.")
@@ -337,7 +369,7 @@ def process_json_file(config_file: str = "cleanup_config.json"):
 
     print(f"\n--- Stage 1: Rule-Based Filtering ({len(data)} total lines) ---")
     stage1_junk_count = 0
-    protected_sentence_count = 0
+    protected_count = 0
 
     for key, text in data.items():
         if key in processed_keys:
@@ -345,29 +377,32 @@ def process_json_file(config_file: str = "cleanup_config.json"):
 
         check_target = text if text else key
         text_str = str(check_target)
+        key_str = str(key)
 
-        # Bypass Stage 2 for Japanese dialogue and sentences
-        if is_protected_sentence(text_str):
-            cleaned_data[key] = text
-            processed_keys.add(key)
-            protected_sentence_count += 1
-            continue
-
-        is_junk, reason = is_stage1_junk(text_str, jp_regex, min_ratio=min_japanese_ratio)
+        # 1. Filter engine keys, file paths, and developer junk first
+        is_junk, reason = is_stage1_junk(key_str, text_str, jp_regex, min_ratio=min_japanese_ratio)
 
         if is_junk:
             quarantine_data[key] = {"val": text, "stage": "Stage 1 (Rule)", "reason": reason}
             processed_keys.add(key)
             stage1_junk_count += 1
-        else:
-            stage2_candidates.append((key, text))
+            continue
+
+        # 2. Protect Japanese sentences, dialogue, and short UI labels / skill names
+        if is_protected_sentence(text_str) or is_protected_short_ui_label(text_str):
+            cleaned_data[key] = text
+            processed_keys.add(key)
+            protected_count += 1
+            continue
+
+        stage2_candidates.append((key, text))
 
     print(f"Stage 1 Complete:")
-    print(f" - {protected_sentence_count} sentences and dialogue lines protected automatically.")
+    print(f" - {protected_count} sentences, skill names, and UI labels protected automatically.")
     print(f" - {stage1_junk_count} junk lines quarantined.")
     print(f" - {len(stage2_candidates)} ambiguous strings sent to Stage 2 LLM.")
 
-    batch_size = config.get("batch_size", 50)
+    batch_size = config.get("batch_size", 30)
     max_workers = config.get("max_workers", 4)
     save_interval = config.get("save_interval", 10)
 

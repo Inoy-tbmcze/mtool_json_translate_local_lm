@@ -4,8 +4,8 @@
     "model": "gemma-4-e4b",
     "batch_size": 1,
     "request_timeout": 60,
-    "max_workers": 40,
+    "max_workers": 20,
     "save_interval": 120,
-    "input_filename": "translated_20260826_221112.json"
+    "input_filename": "translated_20260831_052418.json"
 }
 
