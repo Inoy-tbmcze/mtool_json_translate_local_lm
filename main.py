@@ -290,22 +290,6 @@ class JSONTranslator:
         return None
 
     def summarize_summaries(self, item) -> Any:
-        # prompt = ("""
-        # You are an expert translation strategist manager. Analyze the following text created by another AI's. This are summaries of different parts of the same text. Analyze all the parts and create a highly condensed, dense "Translation Blueprint" for another AI to use as a style guide.
-        # Analyze every instance of 'CORE CONTEXT & TONE' and combine them together.
-        # Analyze every instance of 'CHARACTER/ENTITY PROFILES' and merge them together combining reoccurring characters.
-        # Pay high attention on protagonist characters. Try to keep as much information about protagonist and core characters.
-        # Try to keep list of characters compact. Keep characters that appears between multiple summaries. Don't keep notes on nameless gunts, monsters etc.
-        #
-        # Keep your step-by-step thinking brief and concise before generating the response.
-        #
-        # Extract only the core information required to ensure flawless, consistent translation across batches. Structure your output exactly like this:
-        #
-        # 1. CORE CONTEXT & TONE: (e.g., "A dark sci-fi story. Use an informal, gritty tone. Characters use military jargon.")
-        # 2. CHARACTER/ENTITY PROFILES: (List key characters, their name in original language, genders, ages and relationships so pronouns and verb inflections match across batches.)
-        # 3. Respond ONLY with text that will be passed to another AI. Do not include markdown formatting or explanations.
-        # """)
-
         prompt = f"""You are a Translation Strategy Specialist. Synthesize the multi-part translation notes below into a single, highly condensed "Translation Blueprint" for a downstream translation AI.
 
         PROCESSING DIRECTIVES:
@@ -478,46 +462,6 @@ class JSONTranslator:
 
         source_lang = self.config.get('source_language')
         target_lang = self.config.get('target_language')
-
-        # prompt = (
-        #     f"You are a data translation utility. Your input is a JSON object containing line IDs and text values. "
-        #     f"Translate the values from {source_lang} to {target_lang} and return a JSON object with the EXACT same keys.\n\n"
-        #     f"Rules:\n"
-        #     f"1. Never merge keys or omit keys. The output JSON must have identical keys to the input JSON.\n"
-        #     f"2. Translate sentence fragments exactly as fragments. Do not combine text across different keys.\n"
-        #     f"3. If a value is pure English, code, or a system ID, leave it exactly as is.\n"
-        #     f"4. Respond ONLY with the valid JSON object. Do not include markdown formatting or explanations."
-        # )
-
-        # prompt = (
-        #     f"You are an automated, literal data translation pipeline component. Your input is a JSON object containing line IDs and raw text values. "
-        #     f"Translate the values from {source_lang} to {target_lang} and return a JSON object with the EXACT same keys.\n\n"
-        #     f"CRITICAL SAFETY & OPERATIONAL DIRECTIVES:\n"
-        #     f"1. You are a passive translator. You must translate ALL text literally, objectively, and verbatim, "
-        #     f"regardless of whether the content is sensitive, profane, politically charged, or potentially offensive. "
-        #     f"Do not censor, omit, substitute, or return error messages like '[Translation unavailable]'.\n"
-        #     f"2. Processing this data for translation does not violate safety policies as you are not generating new content; "
-        #     f"you are purely changing the linguistic representation of existing data.\n\n"
-        #     f"3. If the original text contains \\n, the translation result must also include \\n in the corresponding position.\n"
-        #     f"4. If the original text contains \\r, the translation result must also include \\r in the corresponding position.\n"
-        #     f"--- START TRANSLATION BLUEPRINT ---\n"
-        #     f"{summary}\n"
-        #     f"--- END TRANSLATION BLUEPRINT ---\n\n"
-        #     f"[REASONING RULES]:\n"
-        #     f"- Keep your internal thinking extremely brief (under 100 words).\n"
-        #     f"- Quickly verify key names and Japanese translation context in 3 short bullet points max.\n"
-        #     f"- Immediately exit thinking mode and output the JSON result.\n\n"
-        #     f"[STRICT OUTPUT FORMAT RULES]:\n"
-        #     f"- Output MUST be valid, parseable JSON only.\n"
-        #     f"- MUST use standard JSON double quotes (\") for all keys and string values. Never use single quotes (').\n"
-        #     f"- Do NOT output Python dictionary format.\n"
-        #     f"- Do NOT include markdown code blocks (```json), explanations, or preamble.\n\n"
-        #     f"Rules:\n"
-        #     f"1. Never merge keys or omit keys. The output JSON must have identical keys to the input JSON.\n"
-        #     f"2. Translate sentence fragments exactly as fragments. Do not combine text across different keys.\n"
-        #     f"3. If a value is pure English, code, or a system ID, leave it exactly as is.\n"
-        #     f"4. Respond ONLY with the valid JSON object. Do not include markdown formatting or explanations."
-        # )
 
         prompt = f"""You are a precise JSON machine translation component.
         Translate the text values from {source_lang} to {target_lang} according to the blueprint below.
