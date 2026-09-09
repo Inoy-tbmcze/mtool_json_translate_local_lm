@@ -20,6 +20,8 @@
     "source_language": "Japanese",
     "target_language": "English",
     "input_filename": "ManualTransFile_cleaned.json",
+    "common_translations_file": "common_translations.json",
+    "enable_pre_translation": true,
     "batch_size": 40,
     "max_retries": 10,
     "retry_delay": 0.1,

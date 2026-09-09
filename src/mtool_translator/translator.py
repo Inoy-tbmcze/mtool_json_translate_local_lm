@@ -137,6 +137,8 @@ class JSONTranslator:
         config.setdefault("batch_size", 30)
         config.setdefault("save_interval", 100)
         config.setdefault("api_type", "openai")
+        config.setdefault("enable_pre_translation", True)
+        config.setdefault("common_translations_file", "common_translations.json")
 
         return config
 
@@ -151,6 +153,65 @@ class JSONTranslator:
             }
             api_url = self.config["api_endpoint"]
         return headers, api_url
+
+    def _load_common_translations(self) -> Dict[str, str]:
+        """Loads common game translations dictionary from configured JSON file."""
+        if not self.config.get("enable_pre_translation", True):
+            return {}
+
+        dict_file = self.config.get("common_translations_file", "common_translations.json")
+        dict_path = resolve_input_path(dict_file, default_subfolder="")
+        if not dict_path.exists():
+            dict_path = resolve_input_path(dict_file, default_subfolder="raw")
+
+        if not dict_path.exists():
+            self.logger.info("Common translations file '%s' not found. Skipping pre-translation.", dict_file)
+            return {}
+
+        try:
+            with open(dict_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    self.logger.info("Loaded %d common translations from '%s'.", len(data), dict_path.name)
+                    return {str(k): str(v) for k, v in data.items()}
+                self.logger.warning("Common translations file '%s' is not a JSON object.", dict_file)
+        except (json.JSONDecodeError, OSError) as err:
+            self.logger.error("Failed to load common translations from '%s': %s", dict_file, err)
+
+        return {}
+
+    def _apply_pre_translations(
+        self,
+        original_data: Dict[str, Any],
+        translated_data: Dict[str, str],
+        common_dict: Dict[str, str]
+    ) -> int:
+        """Applies pre-translations from common dictionary for exact or trimmed matches."""
+        if not common_dict:
+            return 0
+
+        pre_count = 0
+        for key, val in original_data.items():
+            if key in translated_data:
+                continue
+
+            target_str = str(val) if val is not None and str(val).strip() else str(key)
+
+            # Exact match
+            if target_str in common_dict:
+                translated_data[key] = common_dict[target_str]
+                pre_count += 1
+                continue
+
+            # Whitespace-trimmed match with whitespace preservation
+            stripped = target_str.strip()
+            if stripped and stripped in common_dict:
+                leading = target_str[:len(target_str) - len(target_str.lstrip())]
+                trailing = target_str[len(target_str.rstrip()):]
+                translated_data[key] = f"{leading}{common_dict[stripped]}{trailing}"
+                pre_count += 1
+
+        return pre_count
 
     def summarize(self, item: str) -> Any:
         """Generates a concise Translation Blueprint for character and tone consistency."""
@@ -402,7 +463,7 @@ class JSONTranslator:
         """Loads existing progress dictionary if checkpoint file exists."""
         if progress_file.exists():
             try:
-                with open(progress_file, "r", encoding="utf-8") as f:\
+                with open(progress_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 self.logger.info("Loaded %d items from progress file.", len(data))
                 return data
@@ -497,9 +558,14 @@ class JSONTranslator:
             original_data = json.load(f)
 
         original_data = self._filter_source_data(original_data)
-        summary = self._ensure_summary(summary_path, original_data, auto_confirm)
 
         translated_data = self.load_progress(progress_path)
+        common_dict = self._load_common_translations()
+        pre_count = self._apply_pre_translations(original_data, translated_data, common_dict)
+        if pre_count > 0:
+            self.logger.info("Pre-translated %d lines using common dictionary.", pre_count)
+            self.save_progress(translated_data, progress_path)
+
         items = [
             (k, v) for k, v in original_data.items()
             if k not in translated_data and v and str(v).strip()
@@ -507,7 +573,12 @@ class JSONTranslator:
 
         self.logger.info("Total lines: %d | Pending: %d", len(original_data), len(items))
 
-        self._translate_batches(items, summary, translated_data, progress_path)
+        if items:
+            summary_data = dict(items)
+            summary = self._ensure_summary(summary_path, summary_data, auto_confirm)
+            self._translate_batches(items, summary, translated_data, progress_path)
+        else:
+            self.logger.info("All lines resolved via pre-translation or checkpoint. No LLM calls needed.")
 
         output_file.parent.mkdir(parents=True, exist_ok=True)
         with open(output_file, "w", encoding="utf-8") as f:
