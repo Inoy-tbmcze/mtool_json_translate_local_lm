@@ -16,8 +16,10 @@ Agent skills reside under `.agents/skills/` (mirrored in `.gemini/skills/`):
 mtool_json_translate_local_lm/
 ├── .agents/skills/
 │   ├── unslop/
-│   │   └── SKILL.md
-├── .gemini/skills/               # Workspace mirror of .agents/skills/
+│   │   └── SKILL.md              # Always-applied writing & anti-slop rules
+├── .gemini/
+│   ├── settings.json             # Environment config (fileName, alwaysApply skills, systemInstructions)
+│   └── skills/                   # Workspace mirror of .agents/skills/
 ├── config.json                   # Central configuration
 ├── jp_symbols.json               # Regex symbol matching definitions
 ├── clean_game_text.py            # Cleanup engine
@@ -29,17 +31,19 @@ mtool_json_translate_local_lm/
 
 ### Registered Skills Index
 
-| Skill Name | Description | Trigger |
-| :--- | :--- | :--- |
-| **`check-llm-service`** | Verifies LM Studio endpoint connectivity, loaded models, and chat completion responsiveness. | Before launching tasks, or when debugging connection / model errors. |
-| **`clean-game-text`** | Sanitizes raw localization JSON dumps via rule-based regex and lightweight LLM classification. | When preparing raw game JSON text for translation. |
-| **`translate-game-json`** | Generates Translation Blueprint (`summary.txt`) and translates batches with token-aware chunking. | When translating cleaned files or retranslating failed subsets. |
-| **`validate-translation`** | Audits Japanese-to-English translation quality and isolates lines needing retranslation. | When validating completed translations. |
+| Skill Name | Scope | Description | Trigger |
+| :--- | :--- | :--- | :--- |
+| **`unslop`** | **Always Active** | Strips AI clichés, sycophancy, chatbot filler, superficial -ing clauses, and mannered prose. | In effect for every response, edit, explanation, and translation. |
+| **`check-llm-service`** | On Demand | Verifies LM Studio endpoint connectivity, loaded models, and chat completion responsiveness. | Before launching tasks, or when debugging connection / model errors. |
+| **`clean-game-text`** | On Demand | Sanitizes raw localization JSON dumps via rule-based regex and lightweight LLM classification. | When preparing raw game JSON text for translation. |
+| **`translate-game-json`** | On Demand | Generates Translation Blueprint (`summary.txt`) and translates batches with token-aware chunking. | When translating cleaned files or retranslating failed subsets. |
+| **`validate-translation`** | On Demand | Audits Japanese-to-English translation quality and isolates lines needing retranslation. | When validating completed translations. |
 
 ### Progressive Disclosure & Execution Model
-1. **Discovery:** Agents read the `name` and `description` from the YAML frontmatter in `.agents/skills/<skill>/SKILL.md`.
-2. **Activation:** When a task matches the skill's trigger, the agent reads the full `SKILL.md` body for step-by-step procedures.
-3. **Execution:** The agent invokes the prescribed script or command using the project virtualenv.
+1. **Always-On Skills:** Skills flagged with `alwaysApply` (such as `unslop`) govern all generated text, code, and communication unconditionally.
+2. **Discovery:** Agents read the `name` and `description` from the YAML frontmatter in `.agents/skills/<skill>/SKILL.md`.
+3. **Activation:** When a task matches the skill's trigger, the agent reads the full `SKILL.md` body for step-by-step procedures.
+4. **Execution:** The agent invokes the prescribed script or command using the project virtualenv.
 
 ### Creating New Skills
 When adding new skills to `.agents/skills/<skill-name>/`:
@@ -88,7 +92,7 @@ When adding new skills to `.agents/skills/<skill-name>/`:
 ### Stage 1: Preprocess & Clean Text
 - **Skill:** `clean-game-text` ([SKILL.md](file:///E:/ai/projects/mtool_json_translate_local_lm/.agents/skills/clean-game-text/SKILL.md))
 - **Script:** [clean_game_text.py](file:///E:/ai/projects/mtool_json_translate_local_lm/clean_game_text.py)
-- **Config Section:** `"cleanup"` in [config.json](file:///E:/ai/projects/mtool_json_translate_local_lm/config.json)
+- **Config Section:** `\"cleanup\"` in [config.json](file:///E:/ai/projects/mtool_json_translate_local_lm/config.json)
 - **Command:**
   ```powershell
   & "C:\Users\inoy\PycharmProjects\mtool_translate\.venv\Scripts\python.exe" clean_game_text.py
@@ -100,7 +104,7 @@ When adding new skills to `.agents/skills/<skill-name>/`:
 ### Stage 2: Translation Engine
 - **Skill:** `translate-game-json` ([SKILL.md](file:///E:/ai/projects/mtool_json_translate_local_lm/.agents/skills/translate-game-json/SKILL.md))
 - **Script:** [main.py](file:///E:/ai/projects/mtool_json_translate_local_lm/main.py)
-- **Config Section:** `"translation"` in [config.json](file:///E:/ai/projects/mtool_json_translate_local_lm/config.json)
+- **Config Section:** `\"translation\"` in [config.json](file:///E:/ai/projects/mtool_json_translate_local_lm/config.json)
 - **Command:**
   ```powershell
   & "C:\Users\inoy\PycharmProjects\mtool_translate\.venv\Scripts\python.exe" main.py
@@ -116,7 +120,7 @@ When adding new skills to `.agents/skills/<skill-name>/`:
 ### Stage 3: Translation Validation & Retranslate Loop
 - **Skill:** `validate-translation` ([SKILL.md](file:///E:/ai/projects/mtool_json_translate_local_lm/.agents/skills/validate-translation/SKILL.md))
 - **Script:** [validate_translation.py](file:///E:/ai/projects/mtool_json_translate_local_lm/validate_translation.py)
-- **Config Section:** `"validation"` in [config.json](file:///E:/ai/projects/mtool_json_translate_local_lm/config.json)
+- **Config Section:** `\"validation\"` in [config.json](file:///E:/ai/projects/mtool_json_translate_local_lm/config.json)
 - **Command:**
   ```powershell
   & "C:\Users\inoy\PycharmProjects\mtool_translate\.venv\Scripts\python.exe" validate_translation.py
@@ -128,10 +132,58 @@ When adding new skills to `.agents/skills/<skill-name>/`:
 
 ---
 
+## Configuration Reference (`config.json`)
+
+```json
+{
+  "api_endpoint": "http://127.0.0.1:1234/v1/chat/completions",
+  "api_key": "lm-studio",
+  "cleanup": {
+    "api_endpoint": "http://127.0.0.1:1234/v1/chat/completions",
+    "api_key": "lm-studio",
+    "model": "gemma-4-e4b",
+    "input_filename": "ManualTransFile.json",
+    "symbols_filename": "jp_symbols.json",
+    "min_japanese_ratio": 0.8,
+    "batch_size": 30,
+    "max_workers": 4,
+    "save_interval": 30,
+    "request_timeout": 60
+  },
+  "translation": {
+    "api_endpoint": "http://127.0.0.1:1234/v1/chat/completions",
+    "api_key": "",
+    "model": "google/gemma-4-12b-qat",
+    "source_language": "Japanese",
+    "target_language": "English",
+    "input_filename": "ManualTransFile_cleaned.json",
+    "batch_size": 40,
+    "max_retries": 10,
+    "retry_delay": 0.1,
+    "request_timeout": 1200,
+    "save_interval": 1,
+    "api_type": "lmstudio"
+  },
+  "validation": {
+    "api_endpoint": "http://127.0.0.1:1234/v1/chat/completions",
+    "api_key": "lm-studio",
+    "model": "gemma-4-e4b",
+    "input_filename": "translated_output.json",
+    "batch_size": 1,
+    "max_workers": 20,
+    "save_interval": 120,
+    "request_timeout": 60
+  }
+}
+```
+
+---
+
 ## Agent Operational Rules & Guidelines
-1. **Windows PowerShell Commands Only:** Always use Windows PowerShell commands. Never use Linux or Bash commands (`ls`, `rm`, `cat`, `grep`).
-2. **Virtualenv Interpreter:** Always run Python scripts using `C:\Users\inoy\PycharmProjects\mtool_translate\.venv\Scripts\python.exe`.
-3. **Encoding & Formatting:** All JSON inputs/outputs must use UTF-8 encoding and `ensure_ascii=False, indent=2`.
-4. **JSON Output Resilience:** Always utilize `json_repair.repair_json` to safely deserialize model responses that contain markdown fences, commentary, or unescaped quotes.
-5. **Autosave & Checkpoints:** Preserve checkpoint logic (`checkpoint.json`, `translation_progress.json`, autosaves) to guarantee that interruptions can resume without data loss.
-6. **Skills Adherence:** Refer to the corresponding `.agents/skills/<skill>/SKILL.md` before executing or modifying pipeline steps.
+1. **Always-On Unslop Skill:** Follow [.agents/skills/unslop/SKILL.md](file:///E:/ai/projects/mtool_json_translate_local_lm/.agents/skills/unslop/SKILL.md) unconditionally: eliminate filler, sycophancy, AI buzzwords (delve, tapestry, pivotal, crucial, enhance), superficial -ing clauses, em dashes, and decorative emojis. Speak and write plainly and directly.
+2. **Windows PowerShell Commands Only:** Always use Windows PowerShell commands. Never use Linux or Bash commands (`ls`, `rm`, `cat`, `grep`).
+3. **Virtualenv Interpreter:** Always run Python scripts using `C:\\Users\\inoy\\PycharmProjects\\mtool_translate\\.venv\\Scripts\\python.exe`.
+4. **Encoding & Formatting:** All JSON inputs/outputs must use UTF-8 encoding and `ensure_ascii=False, indent=2`.
+5. **JSON Output Resilience:** Always utilize `json_repair.repair_json` to safely deserialize model responses that contain markdown fences, commentary, or unescaped quotes.
+6. **Autosave & Checkpoints:** Preserve checkpoint logic (`checkpoint.json`, `translation_progress.json`, autosaves) to guarantee that interruptions can resume without data loss.
+7. **Skills Adherence:** Refer to the corresponding `.agents/skills/<skill>/SKILL.md` before executing or modifying pipeline steps.

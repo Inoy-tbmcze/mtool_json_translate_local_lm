@@ -1,0 +1,15 @@
+{
+  "context": {
+    "fileName": [
+      "AGENTS.md",
+      "GEMINI.md",
+      "CLAUDE.md"
+    ]
+  },
+  "skills": {
+    "alwaysApply": [
+      "unslop"
+    ]
+  },
+  "systemInstructions": "Always apply the unslop skill (.agents/skills/unslop/SKILL.md) to all responses, written text, documentation, and code. Strip chatbot pleasantries, sycophancy, AI vocabulary (delve, tapestry, pivotal, crucial, enhance), filler, superficial -ing clauses, and em dashes. Write plainly, concisely, and directly."
+}
