@@ -6,6 +6,8 @@ Stage 1:
   - File Path and Voice Key Filtering: Quarantines audio files and paths before text checks.
   - Sentence Whitelist: Protects full sentences automatically.
   - Short UI Whitelist: Protects short Japanese UI labels and skill names automatically.
+  - Game Item Whitelist: Protects fantasy item names automatically.
+  - Katakana Whitelist: Protects spells, item names, and game vocabulary automatically.
 Stage 2:
   - Fast multithreaded classification for ambiguous strings.
 """
@@ -16,7 +18,7 @@ import sys
 import threading
 import requests
 from pathlib import Path
-from typing import Dict, Any, List, Tuple, Set
+from typing import Dict, Any, List, Tuple, Set, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 DEFAULT_MIN_JAPANESE_RATIO = 0.8
@@ -34,24 +36,29 @@ FILE_EXTENSIONS = (
 
 PURE_ASCII_IDENTIFIER_PATTERN = re.compile(r"^[a-zA-Z0-9_\-\.\(\)\s]+$")
 
-ENGINE_KEY_PATTERNS = [
-    re.compile(r".*フレーム\s*\d+$", re.IGNORECASE),
-    re.compile(r"^event\d+【\d+】$", re.IGNORECASE),
-    re.compile(r"^[a-zA-Z0-9_]{4,}_[\u3040-\u30ff\u4e00-\u9faf]"),
-    re.compile(r"^(?:event|pers|scene|cutscene)\d*_[0-9a-zA-Z_]+$", re.IGNORECASE),
-    re.compile(r"^\d+_\d+_[\u3040-\u30ff\u4e00-\u9faf]", re.IGNORECASE),
-    re.compile(r"^(?:sound|voice|snd|bgm|se)[\\/]", re.IGNORECASE),
-]
+ENGINE_KEY_RE = re.compile(
+    r"(?:.*フレーム\s*\d+$|"
+    r"^event\d+【\d+】$|"
+    r"^[a-zA-Z0-9_]{4,}_[\u3040-\u30ff\u4e00-\u9faf]|"
+    r"^(?:event|pers|scene|cutscene)\d*_[0-9a-zA-Z_]+$|"
+    r"^\d+_\d+_[\u3040-\u30ff\u4e00-\u9faf]|"
+    r"^(?:sound|voice|snd|bgm|se)[\\/])",
+    re.IGNORECASE
+)
+ENGINE_KEY_PATTERNS = [ENGINE_KEY_RE]
 
 FANTASY_ITEM_PATTERN = re.compile(
     r".*?(?:の花|の草|の薬|の種|の根|の芽|の果実|の石|の剣|の盾|の鎧|の指輪|の巻物|の鍵|の壺|の瓶|の尾|の角|の羽|の皮|の骨)$"
 )
 
-DEV_COMMENT_PATTERNS = [
-    r"^\s*//", r"^\s*/\*", r"^\s*#", r"^\s*<!--",
-    r"^\s*【(?:開発|仕様|デバッグ|テスト|メモ|TODO|FIXME|仮|作業用|消去予定|実装予定|処理|補足)】",
-    r"^\s*(?:TODO|FIXME|DEBUG|HACK|BUG|NOTE|メモ|仮置き|未実装|要修正|後で修正|仕様|開発メモ)\s*[:：]",
-]
+KATAKANA_WORD_PATTERN = re.compile(r"^[\u30A0-\u30FF\u30FC\u30FB\s]{2,}$")
+
+DEV_COMMENT_RE = re.compile(
+    r"^\s*(?://|/\*|#|<!--|【(?:開発|仕様|デバッグ|テスト|メモ|TODO|FIXME|仮|作業用|消去予定|実装予定|処理|補足)】|"
+    r"(?:TODO|FIXME|DEBUG|HACK|BUG|NOTE|メモ|仮置き|未実装|要修正|後で修正|仕様|開発メモ)\s*[:：])",
+    re.IGNORECASE
+)
+DEV_COMMENT_PATTERNS = [DEV_COMMENT_RE]
 
 JAPANESE_SENTENCE_PUNCTUATION = ("。", "！", "？", "…", "...", "」", "♪", "〜")
 
@@ -80,6 +87,12 @@ def is_protected_game_item(text: str) -> bool:
     if len(s) <= 20 and FANTASY_ITEM_PATTERN.match(s):
         return True
     return False
+
+
+def is_protected_katakana_word(text: str) -> bool:
+    """Returns True if string is pure Katakana game vocabulary (e.g. spells, items, monster names)."""
+    s = text.strip()
+    return bool(KATAKANA_WORD_PATTERN.match(s))
 
 
 def load_japanese_symbols(symbols_filename: str = "jp_symbols.json") -> Set[str]:
@@ -197,26 +210,25 @@ def is_stage1_junk(
     if "/" in k or "\\" in k or "/" in s or "\\" in s:
         return True, "filepath_or_asset"
 
-    if any(k.lower().endswith(ext) for ext in FILE_EXTENSIONS) or any(s.lower().endswith(ext) for ext in FILE_EXTENSIONS):
+    if k.lower().endswith(FILE_EXTENSIONS) or s.lower().endswith(FILE_EXTENSIONS):
         return True, "filepath_or_asset"
 
     if PURE_ASCII_IDENTIFIER_PATTERN.match(s):
         return True, "pure_ascii_identifier"
 
-    for pattern in ENGINE_KEY_PATTERNS:
-        if pattern.search(k) or pattern.search(s):
-            return True, "game_engine_key_or_marker"
+    if ENGINE_KEY_RE.search(k) or ENGINE_KEY_RE.search(s):
+        return True, "game_engine_key_or_marker"
 
     if not has_japanese_characters(s, jp_regex):
         return True, "non_japanese_text"
 
-    jp_ratio = calculate_japanese_ratio(s, jp_regex)
-    if len(s) > 20 and jp_ratio < min_ratio:
-        return True, f"low_japanese_ratio ({jp_ratio:.1%} < {min_ratio:.1%})"
+    if len(s) > 20:
+        jp_ratio = calculate_japanese_ratio(s, jp_regex)
+        if jp_ratio < min_ratio:
+            return True, f"low_japanese_ratio ({jp_ratio:.1%} < {min_ratio:.1%})"
 
-    for pattern in DEV_COMMENT_PATTERNS:
-        if re.search(pattern, s, re.IGNORECASE):
-            return True, "developer_comment"
+    if DEV_COMMENT_RE.search(s):
+        return True, "developer_comment"
 
     if is_ascii_art_or_symbol_heavy(s, jp_regex):
         return True, "ascii_art_or_symbol_heavy"
@@ -251,7 +263,11 @@ def parse_json_array_safely(content: str) -> list:
     return []
 
 
-def call_batch_classification(batch: List[Tuple[int, str, str]], config: Dict[str, Any]) -> Dict[str, bool]:
+def call_batch_classification(
+    batch: List[Tuple[int, str, str]],
+    config: Dict[str, Any],
+    session: Optional[requests.Session] = None
+) -> Dict[str, bool]:
     """Sends a batch to the LLM for classification."""
     prompt_items = [f"{idx}:{text}" for idx, key, text in batch]
     items_str = "\n".join(prompt_items)
@@ -280,9 +296,10 @@ def call_batch_classification(batch: List[Tuple[int, str, str]], config: Dict[st
     }
 
     results = {key: True for idx, key, text in batch}
+    http_client = session if session is not None else requests
 
     try:
-        resp = requests.post(
+        resp = http_client.post(
             config["api_endpoint"],
             headers=headers,
             json=data,
@@ -304,25 +321,27 @@ def call_batch_classification(batch: List[Tuple[int, str, str]], config: Dict[st
 def save_progress(
     cleaned_path: Path,
     quarantine_path: Path,
-    checkpoint_path: Path,
     cleaned_data: dict,
     quarantine_data: dict,
-    lock: threading.RLock
+    lock: Optional[threading.RLock] = None
 ):
     """Saves progress to disk."""
-    with lock:
-        try:
-            with open(cleaned_path, "w", encoding="utf-8") as f:
-                json.dump(cleaned_data, f, ensure_ascii=False, indent=2)
-            with open(quarantine_path, "w", encoding="utf-8") as f:
-                json.dump(quarantine_data, f, ensure_ascii=False, indent=2)
+    if lock is not None:
+        with lock:
+            cleaned_snap = cleaned_data.copy()
+            quarantine_snap = quarantine_data.copy()
+    else:
+        cleaned_snap = cleaned_data.copy()
+        quarantine_snap = quarantine_data.copy()
 
-            checkpoint_keys = list(cleaned_data.keys()) + list(quarantine_data.keys())
-            with open(checkpoint_path, "w", encoding="utf-8") as f:
-                json.dump({"processed_keys": checkpoint_keys}, f, ensure_ascii=False, indent=2)
-            print(" -> Autosave successful.")
-        except Exception as e:
-            print(f" -> Error during autosave: {e}")
+    try:
+        with open(cleaned_path, "w", encoding="utf-8") as f:
+            json.dump(cleaned_snap, f, ensure_ascii=False, indent=2)
+        with open(quarantine_path, "w", encoding="utf-8") as f:
+            json.dump(quarantine_snap, f, ensure_ascii=False, indent=2)
+        print(" -> Autosave successful.")
+    except Exception as e:
+        print(f" -> Error during autosave: {e}")
 
 
 def process_json_file(config_file: str = "config.json"):
@@ -347,20 +366,10 @@ def process_json_file(config_file: str = "config.json"):
     ext = input_path.suffix
     out_cleaned_path = input_path.parent / f"{stem}_cleaned{ext}"
     out_quarantine_path = input_path.parent / f"{stem}_quarantine{ext}"
-    checkpoint_path = input_path.parent / f"{stem}_checkpoint.json"
 
     cleaned_data = {}
     quarantine_data = {}
     processed_keys = set()
-
-    if checkpoint_path.exists():
-        try:
-            with open(checkpoint_path, "r", encoding="utf-8") as f:
-                chk = json.load(f)
-                processed_keys = set(chk.get("processed_keys", []))
-            print(f"--> Found existing checkpoint: {len(processed_keys)} items already processed.")
-        except Exception as e:
-            print(f"Warning: Could not read checkpoint file ({e}). Starting fresh.")
 
     if out_cleaned_path.exists():
         try:
@@ -377,6 +386,9 @@ def process_json_file(config_file: str = "config.json"):
                 processed_keys.update(quarantine_data.keys())
         except Exception:
             pass
+
+    if processed_keys:
+        print(f"--> Found existing progress: {len(processed_keys)} items already processed.")
 
     with open(input_path, "r", encoding="utf-8") as f:
         data = json.load(f)
@@ -404,8 +416,13 @@ def process_json_file(config_file: str = "config.json"):
             stage1_junk_count += 1
             continue
 
-        # 2. Protect Japanese sentences, dialogue, and short UI labels / skill names
-        if is_protected_sentence(text_str) or is_protected_short_ui_label(text_str):
+        # 2. Protect Japanese sentences, dialogue, short UI labels / skill names, fantasy items, and Katakana vocabulary
+        if (
+            is_protected_sentence(text_str)
+            or is_protected_short_ui_label(text_str)
+            or is_protected_game_item(text_str)
+            or is_protected_katakana_word(text_str)
+        ):
             cleaned_data[key] = text
             processed_keys.add(key)
             protected_count += 1
@@ -414,7 +431,7 @@ def process_json_file(config_file: str = "config.json"):
         stage2_candidates.append((key, text))
 
     print(f"Stage 1 Complete:")
-    print(f" - {protected_count} sentences, skill names, and UI labels protected automatically.")
+    print(f" - {protected_count} sentences, skill names, items, and UI labels protected automatically.")
     print(f" - {stage1_junk_count} junk lines quarantined.")
     print(f" - {len(stage2_candidates)} ambiguous strings sent to Stage 2 LLM.")
 
@@ -424,6 +441,11 @@ def process_json_file(config_file: str = "config.json"):
 
     if stage2_candidates:
         print(f"\n--- Stage 2: Multithreaded LLM Classification ({config['model']}) ---")
+
+        session = requests.Session()
+        adapter = requests.adapters.HTTPAdapter(pool_connections=max_workers, pool_maxsize=max_workers)
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
 
         batches = []
         for i in range(0, len(stage2_candidates), batch_size):
@@ -441,44 +463,44 @@ def process_json_file(config_file: str = "config.json"):
         lock = threading.RLock()
         completed_batches = 0
 
-        for wave_idx, current_wave in enumerate(waves, 1):
-            with ThreadPoolExecutor(max_workers=len(current_wave)) as executor:
-                future_to_batch = {
-                    executor.submit(call_batch_classification, batch, config): batch
-                    for batch in current_wave
-                }
+        try:
+            for wave_idx, current_wave in enumerate(waves, 1):
+                with ThreadPoolExecutor(max_workers=len(current_wave)) as executor:
+                    future_to_batch = {
+                        executor.submit(call_batch_classification, batch, config, session): batch
+                        for batch in current_wave
+                    }
 
-                for future in as_completed(future_to_batch):
-                    batch = future_to_batch[future]
-                    results = future.result()
+                    for future in as_completed(future_to_batch):
+                        batch = future_to_batch[future]
+                        results = future.result()
 
-                    with lock:
-                        for idx, key, text in batch:
-                            if is_protected_game_item(text):
-                                is_user_facing = True
-                            else:
+                        with lock:
+                            for idx, key, text in batch:
                                 is_user_facing = results.get(key, True)
 
-                            if is_user_facing:
-                                cleaned_data[key] = text
-                            else:
-                                quarantine_data[key] = {
-                                    "val": text,
-                                    "stage": "Stage 2 (LLM)",
-                                    "reason": f"Flagged as internal dev junk by {config['model']}"
-                                }
-                            processed_keys.add(key)
+                                if is_user_facing:
+                                    cleaned_data[key] = text
+                                else:
+                                    quarantine_data[key] = {
+                                        "val": text,
+                                        "stage": "Stage 2 (LLM)",
+                                        "reason": f"Flagged as internal dev junk by {config['model']}"
+                                    }
+                                processed_keys.add(key)
 
-                        completed_batches += 1
+                            completed_batches += 1
 
-            if completed_batches % save_interval == 0 or completed_batches == len(batches):
-                print(f"Wave {wave_idx}/{len(waves)} complete. Autosaving progress...")
-                save_progress(
-                    out_cleaned_path, out_quarantine_path, checkpoint_path, cleaned_data, quarantine_data, lock
-                )
+                if completed_batches % save_interval == 0 or completed_batches == len(batches):
+                    print(f"Wave {wave_idx}/{len(waves)} complete. Autosaving progress...")
+                    save_progress(
+                        out_cleaned_path, out_quarantine_path, cleaned_data, quarantine_data, lock
+                    )
+        finally:
+            session.close()
 
     save_progress(
-        out_cleaned_path, out_quarantine_path, checkpoint_path, cleaned_data, quarantine_data, threading.RLock()
+        out_cleaned_path, out_quarantine_path, cleaned_data, quarantine_data
     )
 
     print("\n=== Processing Complete ===")
