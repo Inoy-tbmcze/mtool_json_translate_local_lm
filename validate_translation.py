@@ -18,17 +18,37 @@ from typing import Dict, Any, List, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
-def load_config(config_file: str = "config_validate.json") -> Dict[str, Any]:
+def load_config(config_file: str = "config.json", section: str = "validation") -> Dict[str, Any]:
     """Loads configuration file or applies default settings."""
-    config_path = Path(__file__).parent / config_file if '__file__' in globals() else Path(config_file)
+    script_dir = Path(__file__).parent if '__file__' in globals() else Path.cwd()
+    config_path = Path(config_file)
+    if not config_path.is_absolute():
+        config_path = script_dir / config_path
 
-    config = {}
+    raw_config = {}
     if config_path.exists():
         try:
             with open(config_path, "r", encoding="utf-8") as f:
-                config = json.load(f)
+                raw_config = json.load(f)
         except Exception as e:
             print(f"Warning: Could not load '{config_file}' ({e}). Using default settings.")
+    else:
+        legacy_path = script_dir / "config_validate.json"
+        if legacy_path.exists():
+            try:
+                with open(legacy_path, "r", encoding="utf-8") as f:
+                    raw_config = json.load(f)
+            except Exception:
+                pass
+        else:
+            print(f"Notice: Config file '{config_file}' not found. Using default settings.")
+
+    config = {k: v for k, v in raw_config.items() if not isinstance(v, dict)}
+    section_data = raw_config.get(section, raw_config.get("validate", {}))
+    if not section_data and not any(k in raw_config for k in ("cleanup", "translation", "translate", "validation", "validate")):
+        section_data = raw_config
+
+    config.update(section_data)
 
     config.setdefault("request_timeout", 60)
     config.setdefault("batch_size", 20)
@@ -36,6 +56,7 @@ def load_config(config_file: str = "config_validate.json") -> Dict[str, Any]:
     config.setdefault("save_interval", 10)  # Autosave every N batches
     config.setdefault("input_filename", "translated_game_text.json")
     config.setdefault("api_endpoint", "http://127.0.0.1:1234/v1/chat/completions")
+    config.setdefault("api_key", "lm-studio")
     config.setdefault("model", "gemma-4-e4b")
 
     return config
@@ -129,7 +150,7 @@ def save_progress(
             print(f" -> Error during autosave: {e}")
 
 
-def process_validation(config_file: str = "config_validate.json"):
+def process_validation(config_file: str = "config.json"):
     config = load_config(config_file)
     input_filename = config.get("input_filename", "translated_game_text.json")
     save_interval = config.get("save_interval", 10)

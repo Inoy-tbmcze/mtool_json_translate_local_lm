@@ -107,22 +107,37 @@ def build_japanese_regex(symbols: Set[str]) -> re.Pattern:
     return re.compile(rf"[\u3040-\u30ff\u4e00-\u9faf{escaped_symbols}]")
 
 
-def load_config(config_file: str = "cleanup_config.json") -> Dict[str, Any]:
+def load_config(config_file: str = "config.json", section: str = "cleanup") -> Dict[str, Any]:
     """Loads settings from configuration file or uses defaults."""
     script_dir = Path(__file__).parent if '__file__' in globals() else Path.cwd()
     config_path = Path(config_file)
     if not config_path.is_absolute():
         config_path = script_dir / config_path
 
-    config = {}
+    raw_config = {}
     if config_path.exists():
         try:
             with open(config_path, "r", encoding="utf-8") as f:
-                config = json.load(f)
+                raw_config = json.load(f)
         except Exception as e:
             print(f"Warning: Failed to read '{config_file}' ({e}). Using default settings.")
     else:
-        print(f"Notice: Config file '{config_file}' not found. Using default settings.")
+        legacy_path = script_dir / "cleanup_config.json"
+        if legacy_path.exists():
+            try:
+                with open(legacy_path, "r", encoding="utf-8") as f:
+                    raw_config = json.load(f)
+            except Exception:
+                pass
+        else:
+            print(f"Notice: Config file '{config_file}' not found. Using default settings.")
+
+    config = {k: v for k, v in raw_config.items() if not isinstance(v, dict)}
+    section_data = raw_config.get(section, {})
+    if not section_data and not any(k in raw_config for k in ("cleanup", "translation", "translate", "validation", "validate")):
+        section_data = raw_config
+
+    config.update(section_data)
 
     config.setdefault("request_timeout", 60)
     config.setdefault("batch_size", 30)
@@ -130,6 +145,7 @@ def load_config(config_file: str = "cleanup_config.json") -> Dict[str, Any]:
     config.setdefault("save_interval", 10)
     config.setdefault("input_filename", "game_text.json")
     config.setdefault("api_endpoint", "http://127.0.0.1:1234/v1/chat/completions")
+    config.setdefault("api_key", "lm-studio")
     config.setdefault("model", "gemma-4-e4b")
     config.setdefault("min_japanese_ratio", DEFAULT_MIN_JAPANESE_RATIO)
     config.setdefault("symbols_filename", "jp_symbols.json")
@@ -309,7 +325,7 @@ def save_progress(
             print(f" -> Error during autosave: {e}")
 
 
-def process_json_file(config_file: str = "cleanup_config.json"):
+def process_json_file(config_file: str = "config.json"):
     config = load_config(config_file)
     input_filename = config.get("input_filename", "game_text.json")
     min_japanese_ratio = config.get("min_japanese_ratio", DEFAULT_MIN_JAPANESE_RATIO)

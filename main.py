@@ -5,6 +5,7 @@ import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Tuple
 from json_repair import repair_json
 import requests
@@ -127,15 +128,36 @@ def parse_llm_json_response(response_text: str) -> dict:
 
 
 class JSONTranslator:
-    def __init__(self, config_file: str = "translate_config.json"):
+    def __init__(self, config_file: str = "config.json"):
         self.chunker = TokenAwareChunker()
         self.config = self.load_config(config_file)
         self.logger = logger
         self.print_summary = True
 
-    def load_config(self, config_file: str) -> Dict[str, Any]:
-        with open(config_file, 'r', encoding='utf-8') as f:
-            config = json.load(f)
+    def load_config(self, config_file: str = "config.json", section: str = "translation") -> Dict[str, Any]:
+        config_path = Path(config_file) if isinstance(config_file, Path) else Path(config_file)
+        if not config_path.is_absolute():
+            script_dir = Path(__file__).parent if '__file__' in globals() else Path.cwd()
+            config_path = script_dir / config_path
+
+        raw_config = {}
+        if config_path.exists():
+            with open(config_path, 'r', encoding='utf-8') as f:
+                raw_config = json.load(f)
+        else:
+            legacy_path = config_path.parent / "translate_config.json"
+            if legacy_path.exists():
+                with open(legacy_path, 'r', encoding='utf-8') as f:
+                    raw_config = json.load(f)
+            else:
+                raise FileNotFoundError(f"Config file not found: {config_file}")
+
+        config = {k: v for k, v in raw_config.items() if not isinstance(v, dict)}
+        section_data = raw_config.get(section, raw_config.get("translate", {}))
+        if not section_data and not any(k in raw_config for k in ("cleanup", "translation", "translate", "validation", "validate")):
+            section_data = raw_config
+
+        config.update(section_data)
 
         required_keys = ['api_endpoint', 'api_key', 'model', 'source_language', 'target_language']
         for key in required_keys:
@@ -525,7 +547,7 @@ def main():
         print(f"Initialization failed: {e}")
         return
 
-    input_file = "translated_20260831_052418_retranslate.json"
+    input_file = translator.config.get("input_filename", "translated_20260831_052418_retranslate.json")
     output_file = f"translated_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
     progress_file = "translation_progress.json"
     summary_file = "summary.txt"

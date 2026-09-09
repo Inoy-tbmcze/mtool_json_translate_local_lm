@@ -1,20 +1,29 @@
-# Project Context: Game Localization JSON Translator
+# Project: Game Localization JSON Translator (JP -> EN)
 
 ## Purpose
-Automated game localization (JP -> EN) using local LLMs, focusing on high-fidelity translation of JSON-based game text while preserving structure and context.
+Translate Japanese game text into English using local LLMs. Preserve JSON structures, context, and UI elements.
+
+## Environment
+- **Operating System:** Windows
+- **Command Shell:** PowerShell / CMD
+
+## Execution Commands
+- **Run Workflow:** `python src/main.py`
+- **Preprocess Text:** `python src/clean_game_text.py --input <path>`
+- **Validate Output:** `python src/validate_translation.py --file <path>`
+
+## Agent Rules & Constraints
+1. **Windows Commands Only:** Use Windows PowerShell or CMD commands. Do not use Linux or Bash commands (for example: `ls`, `rm`, `cat`, `grep`).
+2. **Keep Files Small:** Keep individual source code files under 200 lines of code. Split large classes or functions into separate files in `src/`.
+
+## Recommended File Structure
+game_translator/
+├── config/
+├── src/
+├── data/
+└── AGENTS.md
 
 ## Key Components
-- `main.py`: Orchestrates the end-to-end workflow.
-- `translate_config.json`: Global configuration (models, paths, parameters).
-- `clean_game_text.py`: Preprocessing to filter junk/non-translatable text and protect UI elements.
-- `validate_translation.py`: LLM-based automated quality audit.
-- `TokenAwareChunker`: Splits text into chunks fitting local LLM context windows.
-- `Translation Blueprint`: Provides world-building, tone, and character context for consistency.
-
-## Workflow
-Input -> Preprocessing (Cleaning + Blueprint) -> Chunking -> Translation (Retries/Fallbacks) -> Persistence -> Output.
-
-## Technical Details
-- **Error Handling**: Manages 429 (Rate Limit) errors.
-- **Persistence**: Saves progress to `.progress.json` for resumability.
-- **Integrity**: Preserves original JSON keys and structure.
+- `src/main.py`: Entry point. Manages the end-to-end translation pipeline.
+- `src/clean_game_text.py`: Preprocesses text and masks UI tags.
+- `src/validate_translation.py`: Checks translation quality.
