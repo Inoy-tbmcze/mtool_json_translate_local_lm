@@ -334,7 +334,9 @@ class JSONTranslator:
                         parsed = parse_llm_json_response(raw_content)
                         return self._map_translation_response(texts, parsed)
                 elif resp.status_code == 429:
-                    self.logger.warning("Rate limit hit. Waiting %ds...", self.config["retry_delay"])
+                    self.logger.warning(
+                        "Rate limit hit. Waiting %ds...", self.config["retry_delay"]
+                    )
                     time.sleep(self.config["retry_delay"])
                 elif resp.status_code == 401:
                     self.logger.error("API key unauthorized. Aborting batch.")
@@ -400,13 +402,80 @@ class JSONTranslator:
         """Loads existing progress dictionary if checkpoint file exists."""
         if progress_file.exists():
             try:
-                with open(progress_file, "r", encoding="utf-8") as f:
+                with open(progress_file, "r", encoding="utf-8") as f:\
                     data = json.load(f)
                 self.logger.info("Loaded %d items from progress file.", len(data))
                 return data
             except (json.JSONDecodeError, OSError) as err:
                 self.logger.error("Failed to load progress file: %s", err)
         return {}
+
+    def _filter_source_data(self, original_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Filters out non-Japanese lines when source_language is Japanese."""
+        if self.config.get("source_language") != "Japanese":
+            return original_data
+
+        jp_regex = re.compile(r"[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]")
+        filtered_data = {k: v for k, v in original_data.items() if jp_regex.search(str(v))}
+        excluded = len(original_data) - len(filtered_data)
+        print(f"Kept {len(filtered_data)} Japanese lines. Excluded {excluded} non-Japanese lines.")
+        return filtered_data
+
+    def _ensure_summary(
+        self, summary_path: Path, data: Dict[str, Any], auto_confirm: bool
+    ) -> str:
+        """Loads or generates translation summary blueprint."""
+        if not summary_path.exists():
+            raw_texts = [str(v) for v in data.values()]
+            summary_batches = self.chunker.process_all(raw_texts, self.summarize)
+            summary = self.reduce_summaries(summary_batches)
+
+            summary_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(summary_path, "w", encoding="utf-8") as file:
+                file.write(summary)
+
+            if not auto_confirm:
+                input(f"Summary saved to '{summary_path}'. Review it and press Enter...")
+
+        with open(summary_path, "r", encoding="utf-8") as f:
+            return f.read()
+
+    def _run_wave(
+        self,
+        giga_chunk: List[List[Tuple[str, str]]],
+        summary: str,
+        translated_data: Dict[str, str]
+    ) -> None:
+        """Runs a single parallel wave of translation batches."""
+        with ThreadPoolExecutor(max_workers=WORKER_COUNT) as executor:
+            futures = {
+                executor.submit(self.translate_batch, (idx, chunk, summary)): idx
+                for idx, chunk in enumerate(giga_chunk)
+            }
+            for future in as_completed(futures):
+                res = future.result()
+                if isinstance(res, dict):
+                    translated_data.update(res)
+
+    def _translate_batches(
+        self,
+        items: List[Tuple[str, str]],
+        summary: str,
+        translated_data: Dict[str, str],
+        progress_path: Path
+    ) -> None:
+        """Executes batched translations in waves with intermediate autosaves."""
+        batch_size = self.config["batch_size"]
+        all_batches = [items[i:i + batch_size] for i in range(0, len(items), batch_size)]
+        giga_chunks = [
+            all_batches[i:i + WORKER_COUNT]
+            for i in range(0, len(all_batches), WORKER_COUNT)
+        ]
+
+        for giga_index, giga_chunk in enumerate(giga_chunks):
+            self._run_wave(giga_chunk, summary, translated_data)
+            self.save_progress(translated_data, progress_path)
+            self.logger.info("Wave %d/%d complete.", giga_index + 1, len(giga_chunks))
 
     def translate_json_file(
         self,
@@ -427,27 +496,8 @@ class JSONTranslator:
         with open(input_file, "r", encoding="utf-8") as f:
             original_data = json.load(f)
 
-        if self.config.get("source_language") == "Japanese":
-            jp_regex = re.compile(r"[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]")
-            filtered_data = {k: v for k, v in original_data.items() if jp_regex.search(str(v))}
-            excluded = len(original_data) - len(filtered_data)
-            print(f"Kept {len(filtered_data)} Japanese lines. Excluded {excluded} non-Japanese lines.")
-            original_data = filtered_data
-
-        if not summary_path.exists():
-            raw_texts = [str(v) for v in original_data.values()]
-            summary_batches = self.chunker.process_all(raw_texts, self.summarize)
-            summary = self.reduce_summaries(summary_batches)
-
-            summary_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(summary_path, "w", encoding="utf-8") as file:
-                file.write(summary)
-
-            if not auto_confirm:
-                input(f"Summary saved to '{summary_path}'. Review it and press Enter...")
-
-        with open(summary_path, "r", encoding="utf-8") as f:
-            summary = f.read()
+        original_data = self._filter_source_data(original_data)
+        summary = self._ensure_summary(summary_path, original_data, auto_confirm)
 
         translated_data = self.load_progress(progress_path)
         items = [
@@ -457,27 +507,7 @@ class JSONTranslator:
 
         self.logger.info("Total lines: %d | Pending: %d", len(original_data), len(items))
 
-        batch_size = self.config["batch_size"]
-        all_batches = [items[i:i + batch_size] for i in range(0, len(items), batch_size)]
-        giga_chunks = [all_batches[i:i + WORKER_COUNT] for i in range(0, len(all_batches), WORKER_COUNT)]
-
-        for giga_index, giga_chunk in enumerate(giga_chunks):
-            results = []
-            with ThreadPoolExecutor(max_workers=WORKER_COUNT) as executor:
-                futures = {
-                    executor.submit(self.translate_batch, (idx, chunk, summary)): idx
-                    for idx, chunk in enumerate(giga_chunk)
-                }
-                for future in as_completed(futures):
-                    res = future.result()
-                    if isinstance(res, dict):
-                        results.append(res)
-
-            for result in results:
-                translated_data.update(result)
-
-            self.save_progress(translated_data, progress_path)
-            self.logger.info("Wave %d/%d complete.", giga_index + 1, len(giga_chunks))
+        self._translate_batches(items, summary, translated_data, progress_path)
 
         output_file.parent.mkdir(parents=True, exist_ok=True)
         with open(output_file, "w", encoding="utf-8") as f:
@@ -494,14 +524,8 @@ class JSONTranslator:
         return True
 
 
-def process_translation(
-    config_file: str = "config.json",
-    input_file: Optional[str] = None,
-    output_file: Optional[str] = None,
-    auto_confirm: bool = False
-) -> Path:
-    """Entrypoint function for translation stage."""
-    log_path = resolve_output_path("translation.log", default_subfolder="processed")
+def _setup_translation_logger(log_path: Path) -> None:
+    """Configures file and console logging handlers for translation."""
     log_path.parent.mkdir(parents=True, exist_ok=True)
     if not logger.handlers:
         file_handler = logging.FileHandler(str(log_path), encoding="utf-8")
@@ -513,43 +537,72 @@ def process_translation(
         logger.addHandler(file_handler)
         logger.addHandler(stream_handler)
 
-    translator = JSONTranslator(config_file)
 
+def _resolve_translation_paths(
+    translator: JSONTranslator,
+    input_file: Optional[str],
+    output_file: Optional[str]
+) -> Tuple[Path, Path]:
+    """Resolves input and output file paths for translation."""
     target_input = input_file or translator.config.get(
         "input_filename", "ManualTransFile_cleaned.json"
     )
-    resolved_input = resolve_input_path(target_input, default_subfolder="processed")
-
-    if not resolved_input.exists():
-        resolved_input = resolve_input_path(target_input, default_subfolder="raw")
-
-    if not resolved_input.exists():
-        print(f"Error: Translation input file '{target_input}' not found.")
-        return Path(target_input)
+    resolved_in = resolve_input_path(target_input, default_subfolder="processed")
+    if not resolved_in.exists():
+        resolved_in = resolve_input_path(target_input, default_subfolder="raw")
 
     if output_file:
-        resolved_output = Path(output_file)
+        resolved_out = Path(output_file)
     else:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        resolved_output = resolve_output_path(
+        resolved_out = resolve_output_path(
             f"translated_{timestamp}.json", default_subfolder="processed"
         )
+    return resolved_in, resolved_out
+
+
+def _check_resume_prompts(progress_file: Path, summary_file: Path, auto_confirm: bool) -> None:
+    """Interactively prompts user to resume or discard prior checkpoints."""
+    if auto_confirm:
+        return
+    if progress_file.exists():
+        response = input("Found existing progress file. Resume? (y/n): ")
+        if response.lower() not in ["y", "yes"]:
+            progress_file.unlink()
+
+    if summary_file.exists():
+        response = input("Found existing summary file. Use it? (y/n): ")
+        if response.lower() not in ["y", "yes"]:
+            summary_file.unlink()
+
+
+def process_translation(
+    config_file: str = "config.json",
+    input_file: Optional[str] = None,
+    output_file: Optional[str] = None,
+    auto_confirm: bool = False
+) -> Path:
+    """Entrypoint function for translation stage."""
+    log_path = resolve_output_path("translation.log", default_subfolder="processed")
+    _setup_translation_logger(log_path)
+
+    translator = JSONTranslator(config_file)
+    resolved_input, resolved_output = _resolve_translation_paths(
+        translator, input_file, output_file
+    )
+
+    if not resolved_input.exists():
+        print(f"Error: Translation input file '{resolved_input.name}' not found.")
+        return resolved_input
 
     progress_file = resolve_output_path("translation_progress.json", default_subfolder="processed")
     summary_file = resolve_output_path("summary.txt", default_subfolder="processed")
 
-    if not auto_confirm:
-        if progress_file.exists():
-            response = input("Found existing progress file. Resume? (y/n): ")
-            if response.lower() not in ["y", "yes"]:
-                progress_file.unlink()
+    _check_resume_prompts(progress_file, summary_file, auto_confirm)
 
-        if summary_file.exists():
-            response = input("Found existing summary file. Use it? (y/n): ")
-            if response.lower() not in ["y", "yes"]:
-                summary_file.unlink()
-
-    print(f"Starting translation processing: {resolved_input} -> {resolved_output}...")
+    print(
+        f"Starting translation processing: {resolved_input} -> {resolved_output}..."
+    )
     translator.translate_json_file(
         resolved_input,
         resolved_output,

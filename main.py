@@ -10,14 +10,24 @@ _SRC_DIR = Path(__file__).resolve().parent / "src"
 if str(_SRC_DIR) not in sys.path:
     sys.path.insert(0, str(_SRC_DIR))
 
+# pylint: disable=wrong-import-position
 from mtool_translator.cli import main
 from mtool_translator.translator import (
     JSONTranslator,
     TokenAwareChunker,
     process_translation,
     clean_japanese_text,
-    parse_llm_json_response
+    parse_llm_json_response,
 )
+
+__all__ = [
+    "main",
+    "JSONTranslator",
+    "TokenAwareChunker",
+    "process_translation",
+    "clean_japanese_text",
+    "parse_llm_json_response",
+]
 
 if __name__ == "__main__":
     main()

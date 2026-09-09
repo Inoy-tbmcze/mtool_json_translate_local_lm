@@ -19,3 +19,19 @@ mtool-translate = "mtool_translator.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.mypy]
+ignore_missing_imports = true
+warn_unused_configs = true
+
+[tool.pylint.main]
+source-roots = ["src", "."]
+
+[tool.pylint.format]
+max-line-length = 100
+
+[tool.pylint.similarities]
+min-similarity-lines = 15
+ignore-comments = true
+ignore-docstrings = true
+ignore-imports = true
