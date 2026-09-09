@@ -7,8 +7,8 @@ import sys
 from pathlib import Path
 
 from mtool_translator.validator import (
-    process_validation,
     call_batch_validation,
+    process_validation,
     save_progress,
 )
 

@@ -10,9 +10,7 @@ from .validator import process_validation
 
 
 def run_pipeline(
-    config_file: str = "config.json",
-    input_file: Optional[str] = None,
-    auto_confirm: bool = False
+    config_file: str = "config.json", input_file: Optional[str] = None, auto_confirm: bool = False
 ):
     """Executes the full Stage 1 -> Stage 2 -> Stage 3 pipeline."""
     print("=" * 60)
@@ -26,16 +24,13 @@ def run_pipeline(
     # 2. Translate
     print("\n[Step 2/3] Translating cleaned text...")
     translated_path = process_translation(
-        config_file=config_file,
-        input_file=str(cleaned_path),
-        auto_confirm=auto_confirm
+        config_file=config_file, input_file=str(cleaned_path), auto_confirm=auto_confirm
     )
 
     # 3. Validate
     print("\n[Step 3/3] Auditing translation quality...")
     validated_path, retranslate_path = process_validation(
-        config_file=config_file,
-        input_file=str(translated_path)
+        config_file=config_file, input_file=str(translated_path)
     )
 
     print("\n" + "=" * 60)
@@ -49,7 +44,7 @@ def build_parser() -> argparse.ArgumentParser:
     """Builds and configures the CLI argument parser."""
     parser = argparse.ArgumentParser(
         description="MTool Game Localization JSON Translator (Local LLM)",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
 
     subparsers = parser.add_subparsers(dest="command", help="Command to execute")
@@ -85,9 +80,7 @@ def build_parser() -> argparse.ArgumentParser:
     pipe_p = subparsers.add_parser(
         "pipeline", help="Run full pipeline: Clean -> Translate -> Validate"
     )
-    pipe_p.add_argument(
-        "-i", "--input", help="Path to initial raw input JSON file", default=None
-    )
+    pipe_p.add_argument("-i", "--input", help="Path to initial raw input JSON file", default=None)
     pipe_p.add_argument("-c", "--config", help="Path to config.json", default="config.json")
     pipe_p.add_argument("-y", "--yes", action="store_true", help="Auto-confirm prompts")
 
@@ -109,29 +102,21 @@ def main():
 
     if args.command == "clean":
         process_json_file(
-            config_file=args.config,
-            input_file=args.input,
-            output_dir=args.output_dir
+            config_file=args.config, input_file=args.input, output_dir=args.output_dir
         )
     elif args.command == "translate":
         process_translation(
             config_file=args.config,
             input_file=args.input,
             output_file=args.output,
-            auto_confirm=args.yes
+            auto_confirm=args.yes,
         )
     elif args.command == "validate":
         process_validation(
-            config_file=args.config,
-            input_file=args.input,
-            output_dir=args.output_dir
+            config_file=args.config, input_file=args.input, output_dir=args.output_dir
         )
     elif args.command == "pipeline":
-        run_pipeline(
-            config_file=args.config,
-            input_file=args.input,
-            auto_confirm=args.yes
-        )
+        run_pipeline(config_file=args.config, input_file=args.input, auto_confirm=args.yes)
     else:
         parser.print_help()
 

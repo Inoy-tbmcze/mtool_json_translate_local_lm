@@ -21,10 +21,7 @@ def get_project_root() -> Path:
     return Path.cwd()
 
 
-def resolve_input_path(
-    filename: Union[str, Path],
-    default_subfolder: str = "raw"
-) -> Path:
+def resolve_input_path(filename: Union[str, Path], default_subfolder: str = "raw") -> Path:
     """
     Resolves an input file path:
     1. Exact path if absolute or relative to cwd.
@@ -61,10 +58,7 @@ def resolve_input_path(
     return root / path.name
 
 
-def resolve_output_path(
-    filename: Union[str, Path],
-    default_subfolder: str = "processed"
-) -> Path:
+def resolve_output_path(filename: Union[str, Path], default_subfolder: str = "processed") -> Path:
     """Resolves an output path, directing outputs to data/<default_subfolder> by default."""
     path = Path(filename)
     if path.is_absolute():
@@ -80,8 +74,7 @@ def resolve_output_path(
 
 
 def load_config(
-    config_file: Union[str, Path] = "config.json",
-    section: Union[str, None] = None
+    config_file: Union[str, Path] = "config.json", section: Union[str, None] = None
 ) -> dict[str, Any]:
     """Loads configuration settings from a JSON file and applies defaults."""
     root = get_project_root()
@@ -105,7 +98,7 @@ def load_config(
         section_aliases = {
             "cleanup": ["cleanup", "clean"],
             "translation": ["translation", "translate"],
-            "validation": ["validation", "validate"]
+            "validation": ["validation", "validate"],
         }
         matched_section = None
         for key in section_aliases.get(section, [section]):

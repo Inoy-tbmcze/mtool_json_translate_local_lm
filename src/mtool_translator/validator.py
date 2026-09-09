@@ -14,7 +14,8 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Any, List, Tuple, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
+
 import requests
 
 from .config import load_config, resolve_input_path, resolve_output_path
@@ -23,6 +24,7 @@ from .config import load_config, resolve_input_path, resolve_output_path
 @dataclass
 class ValidationPaths:
     """Encapsulates input, output, and checkpoint paths for validation."""
+
     input_file: Path
     valid: Path
     retranslate: Path
@@ -32,6 +34,7 @@ class ValidationPaths:
 @dataclass
 class ValidationState:
     """Encapsulates validation dictionaries and tracked keys."""
+
     validated_data: Dict[str, Any]
     retranslate_data: Dict[str, Any]
     processed_keys: Set[str]
@@ -67,20 +70,17 @@ def call_batch_validation(
         "model": config["model"],
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.0,
-        "max_tokens": 1024
+        "max_tokens": 1024,
     }
     headers = {
         "Content-Type": "application/json",
-        "Authorization": f"Bearer {config.get('api_key', 'lm-studio')}"
+        "Authorization": f"Bearer {config.get('api_key', 'lm-studio')}",
     }
 
     results = {jp: True for _idx, jp, _en in batch}
     try:
         resp = requests.post(
-            config["api_endpoint"],
-            headers=headers,
-            json=data,
-            timeout=config["request_timeout"]
+            config["api_endpoint"], headers=headers, json=data, timeout=config["request_timeout"]
         )
         resp.raise_for_status()
         raw_content = resp.json()["choices"][0]["message"]["content"].strip()
@@ -95,11 +95,10 @@ def call_batch_validation(
 
 
 def save_progress(
-    paths: ValidationPaths,
-    state: ValidationState,
-    lock: Optional[threading.RLock] = None
+    paths: ValidationPaths, state: ValidationState, lock: Optional[threading.RLock] = None
 ) -> None:
     """Safely writes validation results (*_validated.json, *_retranslate.json) and checkpoints."""
+
     def _write_files() -> None:
         paths.valid.parent.mkdir(parents=True, exist_ok=True)
         paths.retranslate.parent.mkdir(parents=True, exist_ok=True)
@@ -127,9 +126,7 @@ def save_progress(
 
 
 def _init_validation_paths(
-    config: Dict[str, Any],
-    input_file: Optional[str],
-    output_dir: Optional[str]
+    config: Dict[str, Any], input_file: Optional[str], output_dir: Optional[str]
 ) -> ValidationPaths:
     """Resolves input, output, and checkpoint paths for translation validation."""
     input_filename = input_file or config.get("input_filename", "translated_game_text.json")
@@ -149,9 +146,7 @@ def _init_validation_paths(
         retranslate_path = out_dir / f"{stem}_retranslate{ext}"
         checkpoint_path = out_dir / f"{stem}_checkpoint.json"
     else:
-        valid_path = resolve_output_path(
-            f"{stem}_validated{ext}", default_subfolder="processed"
-        )
+        valid_path = resolve_output_path(f"{stem}_validated{ext}", default_subfolder="processed")
         retranslate_path = resolve_output_path(
             f"{stem}_retranslate{ext}", default_subfolder="processed"
         )
@@ -179,7 +174,7 @@ def _load_validation_state(paths: ValidationPaths) -> ValidationState:
 
     for check_p, data_dict in [
         (paths.valid, validated_data),
-        (paths.retranslate, retranslate_data)
+        (paths.retranslate, retranslate_data),
     ]:
         if check_p.exists():
             try:
@@ -197,13 +192,12 @@ def _process_validation_wave(
     current_wave: List[List[Tuple[int, str, str]]],
     config: Dict[str, Any],
     lock: threading.RLock,
-    state: ValidationState
+    state: ValidationState,
 ) -> None:
     """Processes a single parallel wave of validation batches."""
     with ThreadPoolExecutor(max_workers=len(current_wave)) as executor:
         future_to_batch = {
-            executor.submit(call_batch_validation, batch, config): batch
-            for batch in current_wave
+            executor.submit(call_batch_validation, batch, config): batch for batch in current_wave
         }
         for future in as_completed(future_to_batch):
             batch = future_to_batch[future]
@@ -222,12 +216,12 @@ def _run_validation_waves(
     config: Dict[str, Any],
     paths: ValidationPaths,
     state: ValidationState,
-    lock: threading.RLock
+    lock: threading.RLock,
 ) -> None:
     """Runs batch waves and saves checkpoints periodically."""
     max_workers = config.get("max_workers", 4)
     save_interval = config.get("save_interval", 10)
-    waves = [batches[i: i + max_workers] for i in range(0, len(batches), max_workers)]
+    waves = [batches[i : i + max_workers] for i in range(0, len(batches), max_workers)]
 
     for wave_idx, current_wave in enumerate(waves, 1):
         _process_validation_wave(current_wave, config, lock, state)
@@ -239,7 +233,7 @@ def _run_validation_waves(
 def process_validation(
     config_file: str = "config.json",
     input_file: Optional[str] = None,
-    output_dir: Optional[str] = None
+    output_dir: Optional[str] = None,
 ) -> Tuple[Path, Path]:
     """Audits translated JSON file, splitting passed items and items needing retranslation."""
     config = load_config(config_file, section="validation")
@@ -249,9 +243,7 @@ def process_validation(
     with open(paths.input_file, "r", encoding="utf-8") as f:
         data = json.load(f)
 
-    unprocessed_items = [
-        (jp, en) for jp, en in data.items() if jp not in state.processed_keys
-    ]
+    unprocessed_items = [(jp, en) for jp, en in data.items() if jp not in state.processed_keys]
 
     if not unprocessed_items:
         print("All items have already been validated.")
@@ -259,13 +251,12 @@ def process_validation(
 
     batch_size = config.get("batch_size", 20)
     batches = [
-        [(idx, jp, en) for idx, (jp, en) in enumerate(unprocessed_items[i:i + batch_size])]
+        [(idx, jp, en) for idx, (jp, en) in enumerate(unprocessed_items[i : i + batch_size])]
         for i in range(0, len(unprocessed_items), batch_size)
     ]
 
     print(
-        f"--- Validating {len(unprocessed_items)} remaining lines "
-        f"across {len(batches)} batches ---"
+        f"--- Validating {len(unprocessed_items)} remaining lines across {len(batches)} batches ---"
     )
 
     lock = threading.RLock()

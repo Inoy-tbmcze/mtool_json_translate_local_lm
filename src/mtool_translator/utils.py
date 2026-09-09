@@ -6,19 +6,61 @@ import json
 import re
 from pathlib import Path
 from typing import Optional, Set, Union
+
 from json_repair import repair_json
 
 DEFAULT_MIN_JAPANESE_RATIO = 0.8
 
 DEFAULT_JP_SYMBOLS = [
-    "）", "」", "…", "（", "「", "『", "』", "【", "】",
-    "・", "！", "？", "〜", "ー", "、", ")", "_", "(", "♡", "。"
+    "）",
+    "」",
+    "…",
+    "（",
+    "「",
+    "『",
+    "』",
+    "【",
+    "】",
+    "・",
+    "！",
+    "？",
+    "〜",
+    "ー",
+    "、",
+    ")",
+    "_",
+    "(",
+    "♡",
+    "。",
 ]
 
 FILE_EXTENSIONS = (
-    ".png", ".jpg", ".jpeg", ".bmp", ".tga", ".webp",
-    ".wav", ".mp3", ".ogg", ".flac", ".webm", ".mp4", ".ogv", ".avi", ".bik", ".bk2",
-    ".cpp", ".h", ".cs", ".py", ".json", ".xml", ".asset", ".mat", ".prefab", ".txt"
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".bmp",
+    ".tga",
+    ".webp",
+    ".wav",
+    ".mp3",
+    ".ogg",
+    ".flac",
+    ".webm",
+    ".mp4",
+    ".ogv",
+    ".avi",
+    ".bik",
+    ".bk2",
+    ".cpp",
+    ".h",
+    ".cs",
+    ".py",
+    ".json",
+    ".xml",
+    ".asset",
+    ".mat",
+    ".prefab",
+    ".txt",
 )
 
 PURE_ASCII_IDENTIFIER_PATTERN = re.compile(r"^[a-zA-Z0-9_\-\.\(\)\s]+$")
@@ -30,7 +72,7 @@ ENGINE_KEY_RE = re.compile(
     r"^(?:event|pers|scene|cutscene)\d*_[0-9a-zA-Z_]+$|"
     r"^\d+_\d+_[\u3040-\u30ff\u4e00-\u9faf]|"
     r"^(?:sound|voice|snd|bgm|se)[\\/])",
-    re.IGNORECASE
+    re.IGNORECASE,
 )
 
 FANTASY_ITEM_PATTERN = re.compile(
@@ -42,7 +84,7 @@ KATAKANA_WORD_PATTERN = re.compile(r"^[\u30A0-\u30FF\u30FC\u30FB\s]{2,}$")
 DEV_COMMENT_RE = re.compile(
     r"^\s*(?://|/\*|#|<!--|【(?:開発|仕様|デバッグ|テスト|メモ|TODO|FIXME|仮|作業用|消去予定|実装予定|処理|補足)】|"
     r"(?:TODO|FIXME|DEBUG|HACK|BUG|NOTE|メモ|仮置き|未実装|要修正|後で修正|仕様|開発メモ)\s*[:：])",
-    re.IGNORECASE
+    re.IGNORECASE,
 )
 
 JAPANESE_SENTENCE_PUNCTUATION = ("。", "！", "？", "…", "...", "」", "♪", "〜")

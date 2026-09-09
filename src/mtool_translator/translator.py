@@ -14,7 +14,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Tuple, Optional
+from typing import Any, Dict, List, Optional, Tuple
+
 import requests
 
 from .config import load_config, resolve_input_path, resolve_output_path
@@ -34,7 +35,7 @@ class TokenAwareChunker:
         n_ctx: int = 131072,
         reasoning_buffer: int = 8000,
         expansion_factor: float = 1.2,
-        model_name: Optional[str] = None
+        model_name: Optional[str] = None,
     ):
         self.n_ctx = n_ctx
         self.tokenizer = None
@@ -42,6 +43,7 @@ class TokenAwareChunker:
         if model_name:
             try:
                 from transformers import AutoTokenizer  # pylint: disable=import-outside-toplevel
+
                 self.tokenizer = AutoTokenizer.from_pretrained(model_name)
             except Exception as err:  # pylint: disable=broad-exception-caught
                 logger.warning("Could not load tokenizer (%s). Using heuristic.", err)
@@ -102,7 +104,10 @@ class TokenAwareChunker:
             estimated_tokens = self.estimate_tokens(chunk_text)
             logger.info(
                 "[Chunk %d/%d] Tokens: ~%d / Max: %d",
-                i, len(chunks), estimated_tokens, self.max_chunk_tokens
+                i,
+                len(chunks),
+                estimated_tokens,
+                self.max_chunk_tokens,
             )
 
             result = process_fn(chunk_text)
@@ -149,7 +154,7 @@ class JSONTranslator:
         else:
             headers = {
                 "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.config['api_key']}"
+                "Authorization": f"Bearer {self.config['api_key']}",
             }
             api_url = self.config["api_endpoint"]
         return headers, api_url
@@ -165,16 +170,26 @@ class JSONTranslator:
             dict_path = resolve_input_path(dict_file, default_subfolder="raw")
 
         if not dict_path.exists():
-            self.logger.info("Common translations file '%s' not found. Skipping pre-translation.", dict_file)
+            self.logger.info(
+                "Common translations file '%s' not found. Skipping pre-translation.",
+                dict_file,
+            )
             return {}
 
         try:
             with open(dict_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 if isinstance(data, dict):
-                    self.logger.info("Loaded %d common translations from '%s'.", len(data), dict_path.name)
+                    self.logger.info(
+                        "Loaded %d common translations from '%s'.",
+                        len(data),
+                        dict_path.name,
+                    )
                     return {str(k): str(v) for k, v in data.items()}
-                self.logger.warning("Common translations file '%s' is not a JSON object.", dict_file)
+                self.logger.warning(
+                    "Common translations file '%s' is not a JSON object.",
+                    dict_file,
+                )
         except (json.JSONDecodeError, OSError) as err:
             self.logger.error("Failed to load common translations from '%s': %s", dict_file, err)
 
@@ -184,7 +199,7 @@ class JSONTranslator:
         self,
         original_data: Dict[str, Any],
         translated_data: Dict[str, str],
-        common_dict: Dict[str, str]
+        common_dict: Dict[str, str],
     ) -> int:
         """Applies pre-translations from common dictionary for exact or trimmed matches."""
         if not common_dict:
@@ -206,8 +221,8 @@ class JSONTranslator:
             # Whitespace-trimmed match with whitespace preservation
             stripped = target_str.strip()
             if stripped and stripped in common_dict:
-                leading = target_str[:len(target_str) - len(target_str.lstrip())]
-                trailing = target_str[len(target_str.rstrip()):]
+                leading = target_str[: len(target_str) - len(target_str.lstrip())]
+                trailing = target_str[len(target_str.rstrip()) :]
                 translated_data[key] = f"{leading}{common_dict[stripped]}{trailing}"
                 pre_count += 1
 
@@ -232,10 +247,7 @@ class JSONTranslator:
         headers, api_url = self._get_api_headers_and_url()
         data = {
             "model": self.config["model"],
-            "messages": [
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": item}
-            ],
+            "messages": [{"role": "system", "content": prompt}, {"role": "user", "content": item}],
             "temperature": 0.0,
             "max_tokens": 2048,
         }
@@ -271,10 +283,7 @@ class JSONTranslator:
         headers, api_url = self._get_api_headers_and_url()
         data = {
             "model": self.config["model"],
-            "messages": [
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": item}
-            ],
+            "messages": [{"role": "system", "content": prompt}, {"role": "user", "content": item}],
             "temperature": 0.0,
             "max_tokens": 2048,
         }
@@ -366,7 +375,7 @@ class JSONTranslator:
             "model": self.config["model"],
             "messages": [
                 {"role": "system", "content": prompt},
-                {"role": "user", "content": json_batch}
+                {"role": "user", "content": json_batch},
             ],
             "temperature": 0.2,
             "max_tokens": 65536,
@@ -380,7 +389,7 @@ class JSONTranslator:
         headers: Dict[str, str],
         data: Dict[str, Any],
         texts: List[Tuple[str, str]],
-        fallback_results: Dict[str, str]
+        fallback_results: Dict[str, str],
     ) -> Dict[str, str]:
         for attempt in range(self.config["max_retries"]):
             try:
@@ -482,9 +491,7 @@ class JSONTranslator:
         print(f"Kept {len(filtered_data)} Japanese lines. Excluded {excluded} non-Japanese lines.")
         return filtered_data
 
-    def _ensure_summary(
-        self, summary_path: Path, data: Dict[str, Any], auto_confirm: bool
-    ) -> str:
+    def _ensure_summary(self, summary_path: Path, data: Dict[str, Any], auto_confirm: bool) -> str:
         """Loads or generates translation summary blueprint."""
         if not summary_path.exists():
             raw_texts = [str(v) for v in data.values()]
@@ -502,10 +509,7 @@ class JSONTranslator:
             return f.read()
 
     def _run_wave(
-        self,
-        giga_chunk: List[List[Tuple[str, str]]],
-        summary: str,
-        translated_data: Dict[str, str]
+        self, giga_chunk: List[List[Tuple[str, str]]], summary: str, translated_data: Dict[str, str]
     ) -> None:
         """Runs a single parallel wave of translation batches."""
         with ThreadPoolExecutor(max_workers=WORKER_COUNT) as executor:
@@ -523,14 +527,13 @@ class JSONTranslator:
         items: List[Tuple[str, str]],
         summary: str,
         translated_data: Dict[str, str],
-        progress_path: Path
+        progress_path: Path,
     ) -> None:
         """Executes batched translations in waves with intermediate autosaves."""
         batch_size = self.config["batch_size"]
-        all_batches = [items[i:i + batch_size] for i in range(0, len(items), batch_size)]
+        all_batches = [items[i : i + batch_size] for i in range(0, len(items), batch_size)]
         giga_chunks = [
-            all_batches[i:i + WORKER_COUNT]
-            for i in range(0, len(all_batches), WORKER_COUNT)
+            all_batches[i : i + WORKER_COUNT] for i in range(0, len(all_batches), WORKER_COUNT)
         ]
 
         for giga_index, giga_chunk in enumerate(giga_chunks):
@@ -538,13 +541,13 @@ class JSONTranslator:
             self.save_progress(translated_data, progress_path)
             self.logger.info("Wave %d/%d complete.", giga_index + 1, len(giga_chunks))
 
-    def translate_json_file(
+    def translate_json_file(  # pylint: disable=too-many-locals
         self,
         input_file: Path,
         output_file: Path,
         progress_file: Optional[Path] = None,
         summary_file: Optional[Path] = None,
-        auto_confirm: bool = False
+        auto_confirm: bool = False,
     ) -> bool:
         """Translates an entire JSON file in batches with progressive checkpointing."""
         progress_path = progress_file or resolve_output_path(
@@ -567,7 +570,8 @@ class JSONTranslator:
             self.save_progress(translated_data, progress_path)
 
         items = [
-            (k, v) for k, v in original_data.items()
+            (k, v)
+            for k, v in original_data.items()
             if k not in translated_data and v and str(v).strip()
         ]
 
@@ -578,7 +582,9 @@ class JSONTranslator:
             summary = self._ensure_summary(summary_path, summary_data, auto_confirm)
             self._translate_batches(items, summary, translated_data, progress_path)
         else:
-            self.logger.info("All lines resolved via pre-translation or checkpoint. No LLM calls needed.")
+            self.logger.info(
+                "All lines resolved via pre-translation or checkpoint. No LLM calls needed."
+            )
 
         output_file.parent.mkdir(parents=True, exist_ok=True)
         with open(output_file, "w", encoding="utf-8") as f:
@@ -610,9 +616,7 @@ def _setup_translation_logger(log_path: Path) -> None:
 
 
 def _resolve_translation_paths(
-    translator: JSONTranslator,
-    input_file: Optional[str],
-    output_file: Optional[str]
+    translator: JSONTranslator, input_file: Optional[str], output_file: Optional[str]
 ) -> Tuple[Path, Path]:
     """Resolves input and output file paths for translation."""
     target_input = input_file or translator.config.get(
@@ -651,7 +655,7 @@ def process_translation(
     config_file: str = "config.json",
     input_file: Optional[str] = None,
     output_file: Optional[str] = None,
-    auto_confirm: bool = False
+    auto_confirm: bool = False,
 ) -> Path:
     """Entrypoint function for translation stage."""
     log_path = resolve_output_path("translation.log", default_subfolder="processed")
@@ -671,14 +675,8 @@ def process_translation(
 
     _check_resume_prompts(progress_file, summary_file, auto_confirm)
 
-    print(
-        f"Starting translation processing: {resolved_input} -> {resolved_output}..."
-    )
+    print(f"Starting translation processing: {resolved_input} -> {resolved_output}...")
     translator.translate_json_file(
-        resolved_input,
-        resolved_output,
-        progress_file,
-        summary_file,
-        auto_confirm=auto_confirm
+        resolved_input, resolved_output, progress_file, summary_file, auto_confirm=auto_confirm
     )
     return resolved_output

@@ -7,31 +7,31 @@ import sys
 from pathlib import Path
 
 from mtool_translator.cleaner import (
-    process_json_file,
-    is_stage1_junk,
     call_batch_classification,
+    is_stage1_junk,
+    process_json_file,
     save_progress,
 )
 from mtool_translator.utils import (
-    DEFAULT_MIN_JAPANESE_RATIO,
     DEFAULT_JP_SYMBOLS,
-    FILE_EXTENSIONS,
-    PURE_ASCII_IDENTIFIER_PATTERN,
+    DEFAULT_MIN_JAPANESE_RATIO,
+    DEV_COMMENT_RE,
     ENGINE_KEY_RE,
     FANTASY_ITEM_PATTERN,
-    KATAKANA_WORD_PATTERN,
-    DEV_COMMENT_RE,
+    FILE_EXTENSIONS,
     JAPANESE_SENTENCE_PUNCTUATION,
     JP_CHAR_PATTERN,
-    is_protected_sentence,
-    is_protected_short_ui_label,
-    is_protected_game_item,
-    is_protected_katakana_word,
-    load_japanese_symbols,
+    KATAKANA_WORD_PATTERN,
+    PURE_ASCII_IDENTIFIER_PATTERN,
     build_japanese_regex,
     calculate_japanese_ratio,
     has_japanese_characters,
     is_ascii_art_or_symbol_heavy,
+    is_protected_game_item,
+    is_protected_katakana_word,
+    is_protected_sentence,
+    is_protected_short_ui_label,
+    load_japanese_symbols,
     parse_json_array_safely,
 )
 
