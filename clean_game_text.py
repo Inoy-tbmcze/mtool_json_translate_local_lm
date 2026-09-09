@@ -6,12 +6,6 @@ Delegates to mtool_translator.cleaner.
 import sys
 from pathlib import Path
 
-# Ensure src/ is on sys.path for direct script execution
-_SRC_DIR = Path(__file__).resolve().parent / "src"
-if str(_SRC_DIR) not in sys.path:
-    sys.path.insert(0, str(_SRC_DIR))
-
-# pylint: disable=wrong-import-position
 from mtool_translator.cleaner import (
     process_json_file,
     is_stage1_junk,
@@ -40,6 +34,11 @@ from mtool_translator.utils import (
     is_ascii_art_or_symbol_heavy,
     parse_json_array_safely,
 )
+
+# Ensure src/ is on sys.path for direct script execution
+_SRC_DIR = Path(__file__).resolve().parent / "src"
+if str(_SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(_SRC_DIR))
 
 __all__ = [
     "process_json_file",
