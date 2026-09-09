@@ -1,7 +1,11 @@
+"""Shared utility functions and regex definitions for Japanese text processing."""
+
+from __future__ import annotations
+
 import json
 import re
 from pathlib import Path
-from typing import Set, List, Dict, Any, Optional
+from typing import Set
 from json_repair import repair_json
 
 DEFAULT_MIN_JAPANESE_RATIO = 0.8
@@ -71,7 +75,7 @@ def is_protected_game_item(text: str) -> bool:
 
 
 def is_protected_katakana_word(text: str) -> bool:
-    """Returns True if string is pure Katakana game vocabulary (e.g. spells, items, monster names)."""
+    """Returns True if string is pure Katakana game vocabulary."""
     s = text.strip() if text else ""
     return bool(KATAKANA_WORD_PATTERN.match(s))
 
@@ -84,7 +88,7 @@ def load_japanese_symbols(symbols_path: Path) -> Set[str]:
                 symbols_list = json.load(f)
                 if isinstance(symbols_list, list):
                     return set(symbols_list)
-        except Exception:
+        except (json.JSONDecodeError, OSError):
             pass
     return set(DEFAULT_JP_SYMBOLS)
 
@@ -151,7 +155,7 @@ def parse_json_array_safely(content: str) -> list:
     if json_match:
         try:
             return json.loads(json_match.group(0))
-        except Exception:
+        except (json.JSONDecodeError, ValueError):
             pass
 
     start_idx = content.find("[")
@@ -162,7 +166,7 @@ def parse_json_array_safely(content: str) -> list:
             repaired = truncated[:last_comma] + "]"
             try:
                 return json.loads(repaired)
-            except Exception:
+            except (json.JSONDecodeError, ValueError):
                 pass
 
     return []

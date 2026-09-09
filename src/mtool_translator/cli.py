@@ -2,7 +2,6 @@
 
 import argparse
 import sys
-from pathlib import Path
 from typing import Optional
 
 from .cleaner import process_json_file
@@ -10,7 +9,11 @@ from .translator import process_translation
 from .validator import process_validation
 
 
-def run_pipeline(config_file: str = "config.json", input_file: Optional[str] = None, auto_confirm: bool = False):
+def run_pipeline(
+    config_file: str = "config.json",
+    input_file: Optional[str] = None,
+    auto_confirm: bool = False
+):
     """Executes the full Stage 1 -> Stage 2 -> Stage 3 pipeline."""
     print("=" * 60)
     print("Starting Localization Pipeline: Clean -> Translate -> Validate")
@@ -43,6 +46,7 @@ def run_pipeline(config_file: str = "config.json", input_file: Optional[str] = N
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """Builds and configures the CLI argument parser."""
     parser = argparse.ArgumentParser(
         description="MTool Game Localization JSON Translator (Local LLM)",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
@@ -51,27 +55,39 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", help="Command to execute")
 
     # Clean sub-command
-    clean_p = subparsers.add_parser("clean", help="Stage 1: Preprocess raw game JSON and quarantine junk")
+    clean_p = subparsers.add_parser(
+        "clean", help="Stage 1: Preprocess raw game JSON and quarantine junk"
+    )
     clean_p.add_argument("-i", "--input", help="Path to input JSON file", default=None)
     clean_p.add_argument("-c", "--config", help="Path to config.json", default="config.json")
     clean_p.add_argument("-o", "--output-dir", help="Target output directory", default=None)
 
     # Translate sub-command
-    trans_p = subparsers.add_parser("translate", help="Stage 2: Translate Japanese JSON text to English")
+    trans_p = subparsers.add_parser(
+        "translate", help="Stage 2: Translate Japanese JSON text to English"
+    )
     trans_p.add_argument("-i", "--input", help="Path to input JSON file", default=None)
     trans_p.add_argument("-o", "--output", help="Path to output JSON file", default=None)
     trans_p.add_argument("-c", "--config", help="Path to config.json", default="config.json")
-    trans_p.add_argument("-y", "--yes", action="store_true", help="Auto-confirm prompts without pausing")
+    trans_p.add_argument(
+        "-y", "--yes", action="store_true", help="Auto-confirm prompts without pausing"
+    )
 
     # Validate sub-command
-    val_p = subparsers.add_parser("validate", help="Stage 3: Validate translations and isolate lines for retranslation")
+    val_p = subparsers.add_parser(
+        "validate", help="Stage 3: Validate translations and isolate lines for retranslation"
+    )
     val_p.add_argument("-i", "--input", help="Path to input JSON file", default=None)
     val_p.add_argument("-c", "--config", help="Path to config.json", default="config.json")
     val_p.add_argument("-o", "--output-dir", help="Target output directory", default=None)
 
     # Full pipeline sub-command
-    pipe_p = subparsers.add_parser("pipeline", help="Run full pipeline: Clean -> Translate -> Validate")
-    pipe_p.add_argument("-i", "--input", help="Path to initial raw input JSON file", default=None)
+    pipe_p = subparsers.add_parser(
+        "pipeline", help="Run full pipeline: Clean -> Translate -> Validate"
+    )
+    pipe_p.add_argument(
+        "-i", "--input", help="Path to initial raw input JSON file", default=None
+    )
     pipe_p.add_argument("-c", "--config", help="Path to config.json", default="config.json")
     pipe_p.add_argument("-y", "--yes", action="store_true", help="Auto-confirm prompts")
 
@@ -79,6 +95,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main():
+    """Main CLI dispatch entrypoint."""
     parser = build_parser()
 
     # If no arguments provided, default to translation stage for backward compatibility

@@ -5,15 +5,17 @@ Preprocesses raw game text dumps, preserves game elements and valid dialogue,
 and quarantines developer junk and engine markers.
 """
 
+from __future__ import annotations
+
 import json
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Dict, Any, List, Tuple, Optional
+from typing import Dict, Any, List, Tuple, Optional, Set
 import requests
 
-from .config import load_config, resolve_input_path, resolve_output_path, get_project_root
+from .config import load_config, resolve_input_path, resolve_output_path
 from .utils import (
     DEFAULT_MIN_JAPANESE_RATIO,
     FILE_EXTENSIONS,
@@ -192,9 +194,9 @@ def process_json_file(
         out_cleaned_path = resolve_output_path(f"{stem}_cleaned{ext}", default_subfolder="processed")
         out_quarantine_path = resolve_output_path(f"{stem}_quarantine{ext}", default_subfolder="processed")
 
-    cleaned_data = {}
-    quarantine_data = {}
-    processed_keys = set()
+    cleaned_data: Dict[str, Any] = {}
+    quarantine_data: Dict[str, Any] = {}
+    processed_keys: Set[str] = set()
 
     for check_p, data_dict in [(out_cleaned_path, cleaned_data), (out_quarantine_path, quarantine_data)]:
         if check_p.exists():
