@@ -29,8 +29,9 @@ def resolve_input_path(
     Resolves an input file path:
     1. Exact path if absolute or relative to cwd.
     2. data/<default_subfolder>/<filename>
-    3. data/raw/<filename> or data/processed/<filename>
-    4. Project root / <filename>
+    3. data/reference/<filename> or data/dictionaries/<filename>
+    4. data/raw/<filename> or data/processed/<filename>
+    5. Project root / <filename>
     """
     path = Path(filename)
     if path.is_absolute() and path.exists():
@@ -43,6 +44,8 @@ def resolve_input_path(
     root = get_project_root()
     search_paths = [
         root / "data" / default_subfolder / path.name,
+        root / "data" / "reference" / path.name,
+        root / "data" / "dictionaries" / path.name,
         root / "data" / "raw" / path.name,
         root / "data" / "processed" / path.name,
         root / path.name,

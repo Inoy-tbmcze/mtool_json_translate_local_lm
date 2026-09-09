@@ -19,7 +19,8 @@ mtool_json_translate_local_lm/
 │   └── skills/                   # Workspace mirror of .agents/skills/
 ├── data/
 │   ├── raw/                      # Original game text dumps (e.g. ManualTransFile.json)
-│   └── processed/                # Intermediate, cleaned, translated, and validated outputs
+│   ├── processed/                # Intermediate, cleaned, translated, and validated outputs
+│   └── reference/                # Reference dictionaries and symbol definitions (common_translations.json, jp_symbols.json)
 ├── src/
 │   └── mtool_translator/        # Core package
 │       ├── __init__.py
@@ -33,7 +34,6 @@ mtool_json_translate_local_lm/
 ├── main.py                       # Unified CLI and Stage 2 script wrapper
 ├── validate_translation.py       # Backward-compatible Stage 3 script wrapper
 ├── config.json                   # Central configuration
-├── jp_symbols.json               # Japanese symbol definitions
 ├── requirements.txt              # Project dependencies
 ├── pyproject.toml                # Package metadata and entry points
 ├── .gitignore                    # Git exclusions

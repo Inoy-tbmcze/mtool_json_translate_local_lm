@@ -5,14 +5,14 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Set
+from typing import Optional, Set, Union
 from json_repair import repair_json
 
 DEFAULT_MIN_JAPANESE_RATIO = 0.8
 
 DEFAULT_JP_SYMBOLS = [
     "）", "」", "…", "（", "「", "『", "』", "【", "】",
-    "・", "！", "？", "〜", "ー", "、", "。"
+    "・", "！", "？", "〜", "ー", "、", ")", "_", "(", "♡", "。"
 ]
 
 FILE_EXTENSIONS = (
@@ -80,16 +80,18 @@ def is_protected_katakana_word(text: str) -> bool:
     return bool(KATAKANA_WORD_PATTERN.match(s))
 
 
-def load_japanese_symbols(symbols_path: Path) -> Set[str]:
-    """Loads Japanese symbols from a JSON file."""
-    if symbols_path.exists():
-        try:
-            with open(symbols_path, "r", encoding="utf-8") as f:
-                symbols_list = json.load(f)
-                if isinstance(symbols_list, list):
-                    return set(symbols_list)
-        except (json.JSONDecodeError, OSError):
-            pass
+def load_japanese_symbols(symbols_path: Optional[Union[Path, str]] = None) -> Set[str]:
+    """Loads Japanese symbols from a JSON file, falling back to default symbols."""
+    if symbols_path is not None:
+        target_path = Path(symbols_path)
+        if target_path.exists():
+            try:
+                with open(target_path, "r", encoding="utf-8") as f:
+                    symbols_list = json.load(f)
+                    if isinstance(symbols_list, list):
+                        return set(symbols_list)
+            except (json.JSONDecodeError, OSError):
+                pass
     return set(DEFAULT_JP_SYMBOLS)
 
 
