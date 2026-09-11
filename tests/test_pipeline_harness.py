@@ -43,6 +43,7 @@ from mtool_translator.config import load_config, resolve_input_path
 from mtool_translator.translator import JP_SOURCE_REGEX, process_translation
 from mtool_translator.utils import (
     build_japanese_regex,
+    calculate_japanese_ratio,
     dump_json_file,
     fast_json_dumps,
     fast_json_dumps_bytes,
@@ -944,6 +945,49 @@ class TestPipelineHarness(unittest.TestCase):
             is_junk, reason = is_stage1_junk(k, text, jp_regex)
             self.assertTrue(is_junk, f"Asset path '{text}' was not marked as junk")
             self.assertEqual(reason, "filepath_or_asset")
+
+        # Alphanumeric Japanese game strings must NOT be marked as junk
+        valid_alphanumeric_game_strings = [
+            "【記録断片 No.0001】失われた古代王国の年代記の一節。",
+            "会心の一撃！！ 8885 のダメージを与えた！",
+            "痛恨の一撃！！ 4111 のダメージを受けた！",
+            "レベルが不足しています。（必要Lv.20）",
+        ]
+        for text in valid_alphanumeric_game_strings:
+            is_junk, reason = is_stage1_junk(text, text, jp_regex)
+            self.assertFalse(
+                is_junk,
+                f"Valid alphanumeric game string '{text}' was falsely quarantined as '{reason}'",
+            )
+
+        # Developer comments with punctuation must still be quarantined as developer_comment
+        comment_strings = [
+            "/* 一時的にコメントアウト。製品版で有効化 */",
+            "// FIXME: ボス第2形態移行時のBGMクロスフェード修正",
+            "// NOTE: ここでプレイヤーの移動速度を一時的に半減させる",
+            "// TODO: イベントスキップ時のフラグ整合性を確認すること",
+            "<!-- UIレイアウトの暫定アンカー配置 -->",
+            "TODO: 英語ボイスのリップシンクタイミング調整",
+            "【仕様】所持金の上限値は9,999,999に設定",
+        ]
+        for text in comment_strings:
+            is_junk, reason = is_stage1_junk(text, text, jp_regex)
+            self.assertTrue(
+                is_junk,
+                f"Comment '{text}' was not quarantined",
+            )
+            self.assertEqual(
+                reason,
+                "developer_comment",
+                f"Comment '{text}' had wrong reason: '{reason}'",
+            )
+
+        # Verify calculate_japanese_ratio with and without noise filtering
+        sample_lore = "【記録断片 No.0001】失われた古代王国の年代記の一節。"
+        ratio_filtered = calculate_japanese_ratio(sample_lore, jp_regex, exclude_noise=True)
+        ratio_raw = calculate_japanese_ratio(sample_lore, jp_regex, exclude_noise=False)
+        self.assertGreaterEqual(ratio_filtered, 0.8)
+        self.assertLess(ratio_raw, 0.8)
 
 
 # ==============================================================================

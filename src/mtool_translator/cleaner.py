@@ -129,12 +129,6 @@ def _is_content_junk(text: str, jp_regex: Any, min_ratio: float) -> str | None:
     if not has_japanese_characters(clean_text, jp_regex):
         return "non_japanese_text"
 
-    n = len(clean_text)
-    if n > 20:
-        jp_ratio = calculate_japanese_ratio(clean_text, jp_regex)
-        if jp_ratio < min_ratio:
-            return f"low_japanese_ratio ({jp_ratio:.1%} < {min_ratio:.1%})"
-
     # Fast comment check on first non-whitespace character
     l_s = text.lstrip()
     if l_s and l_s[0] in DEV_COMMENT_STARTERS and DEV_COMMENT_RE.match(l_s):
@@ -142,6 +136,17 @@ def _is_content_junk(text: str, jp_regex: Any, min_ratio: float) -> str | None:
 
     if is_ascii_art_or_symbol_heavy(clean_text, jp_regex):
         return "ascii_art_or_symbol_heavy"
+
+    # Semantic Protection: dialogue and valid game strings must not be
+    # quarantined by alphanumeric/formatting ratio cutoffs.
+    if is_protected_sentence(clean_text) or is_protected_game_item(clean_text):
+        return None
+
+    n = len(clean_text)
+    if n > 20:
+        jp_ratio = calculate_japanese_ratio(clean_text, jp_regex)
+        if jp_ratio < min_ratio:
+            return f"low_japanese_ratio ({jp_ratio:.1%} < {min_ratio:.1%})"
 
     return None
 

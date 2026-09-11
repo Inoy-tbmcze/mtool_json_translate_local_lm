@@ -236,12 +236,33 @@ def build_japanese_regex(symbols: set[str]) -> re.Pattern:
     return re.compile(rf"[\u3040-\u30ff\u4e00-\u9faf{escaped_symbols}]")
 
 
-def calculate_japanese_ratio(text: str, jp_regex: re.Pattern) -> float:
-    """Calculates the proportion of Japanese characters in a string."""
+_FILTER_NOISE_RE = re.compile(r"[\s\d\W_]")
+
+
+def calculate_japanese_ratio(
+    text: str, jp_regex: re.Pattern, exclude_noise: bool = True
+) -> float:
+    """Calculates the proportion of Japanese characters in a string.
+
+    When exclude_noise is True (default), calculates ratio against meaningful
+    linguistic characters (excluding whitespace, digits, and non-word symbols)
+    to prevent valid Japanese text containing numbers or ASCII identifiers from
+    being falsely quarantined.
+    """
     if not text:
         return 0.0
-    jp_char_count = len(jp_regex.findall(text))
-    return jp_char_count / len(text)
+
+    if not exclude_noise:
+        jp_char_count = len(jp_regex.findall(text))
+        return jp_char_count / len(text)
+
+    filtered = _FILTER_NOISE_RE.sub("", text)
+    if not filtered:
+        jp_char_count = len(jp_regex.findall(text))
+        return jp_char_count / len(text)
+
+    jp_char_count = len(jp_regex.findall(filtered))
+    return jp_char_count / len(filtered)
 
 
 def has_japanese_characters(text: str, jp_regex: re.Pattern) -> bool:
