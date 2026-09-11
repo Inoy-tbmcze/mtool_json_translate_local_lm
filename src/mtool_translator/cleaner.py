@@ -6,7 +6,6 @@ and quarantines developer junk and engine markers.
 
 from __future__ import annotations
 
-import socket
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -14,9 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-import requests
-
 from .config import load_config, resolve_input_path, resolve_output_path
+from .http_client import FastLocalHttpClient, HttpRequestError, default_client
 from .native_core import fast_is_ascii_identifier
 from .utils import (
     DEFAULT_MIN_JAPANESE_RATIO,
@@ -38,14 +36,6 @@ from .utils import (
     load_json_file,
     parse_json_array_safely,
 )
-
-
-class FastLocalAdapter(requests.adapters.HTTPAdapter):
-    """Custom HTTP adapter enabling TCP_NODELAY for ultra-low latency local API calls."""
-
-    def init_poolmanager(self, *args: Any, **kwargs: Any) -> None:
-        kwargs["socket_options"] = [(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)]
-        super().init_poolmanager(*args, **kwargs)
 
 
 @dataclass
@@ -71,7 +61,7 @@ class CleanerWaveContext:
     """Bundles shared context parameters for wave execution."""
 
     config: Dict[str, Any]
-    session: requests.Session
+    session: FastLocalHttpClient
     lock: threading.RLock
     state: CleanerState
 
@@ -147,7 +137,7 @@ def is_stage1_junk(
 
 
 def _send_classification_request(
-    prompt: str, config: Dict[str, Any], session: Optional[requests.Session]
+    prompt: str, config: Dict[str, Any], session: Optional[FastLocalHttpClient] = None
 ) -> Set[Any]:
     """Sends the classification request to the LLM and extracts discarded IDs."""
     req_body = {
@@ -160,7 +150,7 @@ def _send_classification_request(
         "Content-Type": "application/json",
         "Authorization": f"Bearer {config.get('api_key', 'lm-studio')}",
     }
-    requester = session or requests
+    requester = session or default_client
     resp = requester.post(
         config["api_endpoint"],
         headers=headers,
@@ -175,7 +165,7 @@ def _send_classification_request(
 def call_batch_classification(
     batch: List[Tuple[int, str, str]],
     config: Dict[str, Any],
-    session: Optional[requests.Session] = None,
+    session: Optional[FastLocalHttpClient] = None,
 ) -> Dict[str, bool]:
     """Sends a batch to the LLM for classification."""
     items_str = "\n".join(f"{idx}:{text}" for idx, _k, text in batch)
@@ -196,7 +186,7 @@ def call_batch_classification(
         for idx, key, _text in batch:
             if idx in discard_ids or str(idx) in discard_ids:
                 results[key] = False
-    except (requests.RequestException, ValueError, KeyError) as err:
+    except (HttpRequestError, ValueError, KeyError) as err:
         print(f"\nWarning: Batch classification request failed ({err}). Defaulting items to KEEP.")
 
     return results
@@ -368,11 +358,7 @@ def _execute_stage2_waves(
         f"synchronized waves (Wave size: {max_workers})...\n"
     )
 
-    session = requests.Session()
-    adapter = FastLocalAdapter(pool_connections=max_workers, pool_maxsize=max_workers)
-    session.mount("http://", adapter)
-    session.mount("https://", adapter)
-
+    session = FastLocalHttpClient(max_connections=max_workers)
     lock = threading.RLock()
     ctx = CleanerWaveContext(config=config, session=session, lock=lock, state=state)
     try:

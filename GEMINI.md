@@ -8,7 +8,7 @@ Performance-critical paths incorporate low-level acceleration:
 - Unicode BMP 8,192-byte bitmask lookup table for character set checks.
 - Fast-rejection zero-copy string algorithms for text cleanup.
 - SIMD JSON serialization via `orjson`.
-- `TCP_NODELAY` socket connection pooling on local HTTP requests to eliminate Nagle packet buffering latency.
+- In-house persistent HTTP/1.1 client (`FastLocalHttpClient`) utilizing standard library `http.client`, Windows `SIO_LOOPBACK_FAST_PATH`, `TCP_NODELAY`, and LIFO connection pooling, completely eliminating `requests` and its transitive dependencies.
 
 ---
 
@@ -34,6 +34,7 @@ mtool_json_translate_local_lm/
 │       ├── cli.py                # Unified CLI entrypoint
 │       ├── config.py             # Configuration & path resolution
 │       ├── cleaner.py            # Stage 1: Heuristic & LLM text cleaner
+│       ├── http_client.py        # Ultra-fast in-house persistent HTTP/1.1 client
 │       ├── native_core.py        # JIT x86-64 machine code & bitmask acceleration
 │       ├── translator.py         # Stage 2: Token-aware chunker & translation engine
 │       ├── validator.py          # Stage 3: Translation validation auditor
@@ -81,7 +82,7 @@ mtool_json_translate_local_lm/
   # Or activate venv in PowerShell:
   C:\Users\inoy\PycharmProjects\mtool_translate\.venv\Scripts\Activate.ps1
   ```
-  *Important:* Always invoke Python using the virtual environment interpreter above. System Python lacks required dependencies (`requests`, `json_repair`, `orjson`).
+  *Important:* Always invoke Python using the virtual environment interpreter above. System Python lacks required dependencies (`json_repair`, `orjson`).
 
 - **Local LLM Server (LM Studio):**
   - Default endpoint: `http://127.0.0.1:1234/v1/chat/completions`

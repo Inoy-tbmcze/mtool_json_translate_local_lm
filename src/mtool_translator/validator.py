@@ -7,7 +7,6 @@ Separates passed translations from failed lines needing retranslation.
 from __future__ import annotations
 
 import json
-import socket
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -15,19 +14,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-import requests
 from json_repair import repair_json
 
 from .config import load_config, resolve_input_path, resolve_output_path
+from .http_client import FastLocalHttpClient, HttpRequestError, default_client
 from .utils import dump_json_file, fast_json_dumps_bytes, fast_json_loads, load_json_file
-
-
-class FastLocalAdapter(requests.adapters.HTTPAdapter):
-    """Custom HTTP adapter enabling TCP_NODELAY for ultra-low latency local API calls."""
-
-    def init_poolmanager(self, *args: Any, **kwargs: Any) -> None:
-        kwargs["socket_options"] = [(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)]
-        super().init_poolmanager(*args, **kwargs)
 
 
 @dataclass
@@ -54,7 +45,7 @@ class ValidationWaveContext:
     """Bundles shared context parameters for validation wave execution."""
 
     config: Dict[str, Any]
-    session: requests.Session
+    session: FastLocalHttpClient
     lock: threading.RLock
     state: ValidationState
 
@@ -88,7 +79,7 @@ def _parse_validation_json(content: str) -> Dict[str, Any]:
 
 
 def _send_validation_request(
-    prompt: str, config: Dict[str, Any], session: Optional[requests.Session]
+    prompt: str, config: Dict[str, Any], session: Optional[FastLocalHttpClient] = None
 ) -> Dict[str, Any]:
     """Sends validation payload to LLM and returns parsed mapping."""
     req_data = {
@@ -101,7 +92,7 @@ def _send_validation_request(
         "Content-Type": "application/json",
         "Authorization": f"Bearer {config.get('api_key', 'lm-studio')}",
     }
-    requester = session or requests
+    requester = session or default_client
     resp = requester.post(
         config["api_endpoint"],
         headers=headers,
@@ -116,7 +107,7 @@ def _send_validation_request(
 def call_batch_validation(
     batch: List[Tuple[int, str, str]],
     config: Dict[str, Any],
-    session: Optional[requests.Session] = None,
+    session: Optional[FastLocalHttpClient] = None,
 ) -> Dict[str, bool]:
     """Sends batch of (ID, JP_source, EN_target) to LLM for translation validation."""
     items_str = "\n".join(f"{idx} | JP: {jp} | EN: {en}" for idx, jp, en in batch)
@@ -139,7 +130,7 @@ def call_batch_validation(
         for idx, jp, _en in batch:
             val = parsed.get(str(idx), 1)
             results[jp] = bool(val == 1 or val is True or str(val).lower() == "true")
-    except (requests.RequestException, ValueError, KeyError) as err:
+    except (HttpRequestError, ValueError, KeyError) as err:
         print(f"\nWarning: Batch validation request failed ({err}). Defaulting items to VALID (1).")
 
     return results
@@ -265,11 +256,7 @@ def _run_validation_waves(
     save_interval = config.get("save_interval", 10)
     waves = [batches[i : i + max_workers] for i in range(0, len(batches), max_workers)]
 
-    session = requests.Session()
-    adapter = FastLocalAdapter(pool_connections=max_workers, pool_maxsize=max_workers)
-    session.mount("http://", adapter)
-    session.mount("https://", adapter)
-
+    session = FastLocalHttpClient(max_connections=max_workers)
     ctx = ValidationWaveContext(config=config, session=session, lock=lock, state=state)
     try:
         with ThreadPoolExecutor(max_workers=max_workers) as executor:

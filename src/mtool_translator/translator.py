@@ -5,15 +5,13 @@ from __future__ import annotations
 import logging
 import math
 import re
-import socket
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-import requests
-
 from .config import load_config, resolve_input_path, resolve_output_path
+from .http_client import FastLocalHttpClient, HttpRequestError
 from .native_core import fast_count_jp_and_ascii
 from .utils import (
     clean_japanese_text,
@@ -42,14 +40,6 @@ DEFAULT_MAX_TOKENS = 1500
 JP_SOURCE_REGEX = re.compile(r"[\u3040-\u30ff\u4e00-\u9faf]")
 JP_TOKEN_RATIO = 1.1
 ASCII_TOKEN_RATIO = 0.28
-
-
-class FastLocalAdapter(requests.adapters.HTTPAdapter):
-    """Custom HTTP adapter enabling TCP_NODELAY for ultra-low latency local API calls."""
-
-    def init_poolmanager(self, *args: Any, **kwargs: Any) -> None:
-        kwargs["socket_options"] = [(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)]
-        super().init_poolmanager(*args, **kwargs)
 
 
 class TokenAwareChunker:
@@ -123,10 +113,7 @@ class JSONTranslator:
         self.print_summary = True
 
         max_workers = self.config.get("max_workers", 4)
-        self.session = requests.Session()
-        adapter = FastLocalAdapter(pool_connections=max_workers, pool_maxsize=max_workers)
-        self.session.mount("http://", adapter)
-        self.session.mount("https://", adapter)
+        self.session = FastLocalHttpClient(max_connections=max_workers)
 
     def close(self) -> None:
         """Closes the underlying HTTP session."""
@@ -281,7 +268,7 @@ class JSONTranslator:
                 result_stripped = resp.json()["choices"][0]["message"]["content"].strip()
                 self.logger.info("Section summary generated successfully.")
                 return result_stripped
-        except (requests.RequestException, ValueError, KeyError) as err:
+        except (HttpRequestError, ValueError, KeyError) as err:
             self.logger.error("Summarize request failed: %s", err)
         return None
 
@@ -323,7 +310,7 @@ class JSONTranslator:
                 result_stripped = resp.json()["choices"][0]["message"]["content"].strip()
                 self.logger.info("Reduced summary generated successfully.")
                 return result_stripped
-        except (requests.RequestException, ValueError, KeyError) as err:
+        except (HttpRequestError, ValueError, KeyError) as err:
             self.logger.error("Summarize summaries request failed: %s", err)
         return None
 
@@ -445,7 +432,7 @@ class JSONTranslator:
                     return fallback_results
                 else:
                     self.logger.error("API Error (%d): %s", resp.status_code, resp.text)
-            except (requests.RequestException, ValueError, KeyError) as err:
+            except (HttpRequestError, ValueError, KeyError) as err:
                 self.logger.error("Attempt %d error during translation: %s", attempt + 1, err)
 
             if attempt < self.config["max_retries"] - 1:
