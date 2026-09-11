@@ -1,12 +1,12 @@
-"""
-Stage 1 & Stage 2 Text Cleaning Module for Game Localization JSON.
--------------------------------------------------------------------
+"""Stage 1 & Stage 2 Text Cleaning Module for Game Localization JSON.
+
 Preprocesses raw game text dumps, preserves game elements and valid dialogue,
 and quarantines developer junk and engine markers.
 """
 
 from __future__ import annotations
 
+import socket
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -17,13 +17,13 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 import requests
 
 from .config import load_config, resolve_input_path, resolve_output_path
+from .native_core import fast_is_ascii_identifier
 from .utils import (
     DEFAULT_MIN_JAPANESE_RATIO,
     DEV_COMMENT_RE,
     DEV_COMMENT_STARTERS,
     ENGINE_KEY_RE,
     FILE_EXTENSIONS,
-    PURE_ASCII_IDENTIFIER_PATTERN,
     build_japanese_regex,
     calculate_japanese_ratio,
     dump_json_file,
@@ -38,6 +38,14 @@ from .utils import (
     load_json_file,
     parse_json_array_safely,
 )
+
+
+class FastLocalAdapter(requests.adapters.HTTPAdapter):
+    """Custom HTTP adapter enabling TCP_NODELAY for ultra-low latency local API calls."""
+
+    def init_poolmanager(self, *args: Any, **kwargs: Any) -> None:
+        kwargs["socket_options"] = [(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)]
+        super().init_poolmanager(*args, **kwargs)
 
 
 @dataclass
@@ -58,38 +66,53 @@ class CleanerState:
     processed_keys: Set[str]
 
 
+@dataclass
+class CleanerWaveContext:
+    """Bundles shared context parameters for wave execution."""
+
+    config: Dict[str, Any]
+    session: requests.Session
+    lock: threading.RLock
+    state: CleanerState
+
+
+def _has_engine_markers(key: str, text: str) -> bool:
+    """Checks key and text for engine trigger markers."""
+    if "_" in key or "フレーム" in key or (key and key[0] in "eE"):
+        if ENGINE_KEY_RE.search(key):
+            return True
+    if "_" in text or "フレーム" in text or (text and text[0] in "eE"):
+        if ENGINE_KEY_RE.search(text):
+            return True
+    return False
+
+
 def _is_filepath_or_engine_junk(key: str, text: str) -> Optional[str]:
     """Checks fast filepath, asset, identifier, or engine marker junk."""
     if not text:
         return "empty_string"
 
-    # Fast memchr substring checks
+    # Fast substring checks for file paths
     if "/" in key or "\\" in key or "/" in text or "\\" in text:
         return "filepath_or_asset"
 
-    # Fast file extension check (skip string lowering if no dot is present)
+    # Fast file extension check
     if ("." in key and key.lower().endswith(FILE_EXTENSIONS)) or (
         "." in text and text.lower().endswith(FILE_EXTENSIONS)
     ):
         return "filepath_or_asset"
 
-    # Fast ASCII check before regex matching
-    if text.isascii() and PURE_ASCII_IDENTIFIER_PATTERN.match(text):
+    # Fast ASCII check via native machine code kernel
+    if text.isascii() and fast_is_ascii_identifier(text):
         return "pure_ascii_identifier"
 
-    # Fast engine key pre-check
-    if "_" in key or "フレーム" in key or (key and key[0] in "eE"):
-        if ENGINE_KEY_RE.search(key):
-            return "game_engine_key_or_marker"
-
-    if "_" in text or "フレーム" in text or (text and text[0] in "eE"):
-        if ENGINE_KEY_RE.search(text):
-            return "game_engine_key_or_marker"
+    if _has_engine_markers(key, text):
+        return "game_engine_key_or_marker"
 
     return None
 
 
-def _is_content_junk(text: str, jp_regex, min_ratio: float) -> Optional[str]:
+def _is_content_junk(text: str, jp_regex: Any, min_ratio: float) -> Optional[str]:
     """Checks character ratio, comment, or symbol junk."""
     if not has_japanese_characters(text, jp_regex):
         return "non_japanese_text"
@@ -112,15 +135,41 @@ def _is_content_junk(text: str, jp_regex, min_ratio: float) -> Optional[str]:
 
 
 def is_stage1_junk(
-    key: str, text: str, jp_regex, min_ratio: float = DEFAULT_MIN_JAPANESE_RATIO
+    key: str, text: str, jp_regex: Any, min_ratio: float = DEFAULT_MIN_JAPANESE_RATIO
 ) -> Tuple[bool, str]:
-    """Returns (is_junk, reason) based on fast regex rules."""
+    """Returns (is_junk, reason) based on fast heuristic rules."""
     s = text.strip() if text else ""
     k = key.strip() if key else ""
     reason = _is_filepath_or_engine_junk(k, s) or _is_content_junk(s, jp_regex, min_ratio)
     if reason:
         return True, reason
     return False, ""
+
+
+def _send_classification_request(
+    prompt: str, config: Dict[str, Any], session: Optional[requests.Session]
+) -> Set[Any]:
+    """Sends the classification request to the LLM and extracts discarded IDs."""
+    req_body = {
+        "model": config["model"],
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.0,
+        "max_tokens": 512,
+    }
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {config.get('api_key', 'lm-studio')}",
+    }
+    requester = session or requests
+    resp = requester.post(
+        config["api_endpoint"],
+        headers=headers,
+        data=fast_json_dumps_bytes(req_body),
+        timeout=config["request_timeout"],
+    )
+    resp.raise_for_status()
+    raw_msg = resp.json()["choices"][0]["message"]["content"].strip()
+    return set(parse_json_array_safely(raw_msg))
 
 
 def call_batch_classification(
@@ -130,7 +179,7 @@ def call_batch_classification(
 ) -> Dict[str, bool]:
     """Sends a batch to the LLM for classification."""
     items_str = "\n".join(f"{idx}:{text}" for idx, _k, text in batch)
-    combined_prompt = (
+    prompt = (
         "Identify developer junk in game text.\n"
         "Return a JSON array of integer IDs to DISCARD (e.g., [0, 3]).\n"
         "Discard ONLY if 100% sure it is dev junk "
@@ -141,35 +190,13 @@ def call_batch_classification(
         f"Items:\n{items_str}"
     )
 
-    data = {
-        "model": config["model"],
-        "messages": [{"role": "user", "content": combined_prompt}],
-        "temperature": 0.0,
-        "max_tokens": 512,
-    }
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {config.get('api_key', 'lm-studio')}",
-    }
-
     results = {key: True for _idx, key, _text in batch}
-    payload = fast_json_dumps_bytes(data)
-
     try:
-        requester = session or requests
-        resp = requester.post(
-            config["api_endpoint"],
-            headers=headers,
-            data=payload,
-            timeout=config["request_timeout"],
-        )
-        resp.raise_for_status()
-        raw_msg = resp.json()["choices"][0]["message"]["content"].strip()
-        discard_ids = set(parse_json_array_safely(raw_msg))
+        discard_ids = _send_classification_request(prompt, config, session)
         for idx, key, _text in batch:
             if idx in discard_ids or str(idx) in discard_ids:
                 results[key] = False
-    except Exception as err:
+    except (requests.RequestException, ValueError, KeyError) as err:
         print(f"\nWarning: Batch classification request failed ({err}). Defaulting items to KEEP.")
 
     return results
@@ -240,7 +267,7 @@ def _load_existing_progress(paths: CleanerPaths) -> CleanerState:
                 if isinstance(loaded, dict):
                     data_dict.update(loaded)
                     processed_keys.update(loaded.keys())
-            except Exception:
+            except (OSError, ValueError, TypeError):
                 pass
 
     if processed_keys:
@@ -250,7 +277,7 @@ def _load_existing_progress(paths: CleanerPaths) -> CleanerState:
 
 
 def _run_stage1_filter(
-    data: Dict[str, Any], state: CleanerState, jp_regex, min_ratio: float
+    data: Dict[str, Any], state: CleanerState, jp_regex: Any, min_ratio: float
 ) -> List[Tuple[str, Any]]:
     """Filters lines using Stage 1 heuristic rules and protected patterns."""
     stage2_candidates = []
@@ -303,30 +330,27 @@ def _run_stage1_filter(
 def _process_wave_with_executor(
     executor: ThreadPoolExecutor,
     current_wave: List[List[Tuple[int, str, str]]],
-    config: Dict[str, Any],
-    session: requests.Session,
-    lock: threading.RLock,
-    state: CleanerState,
+    ctx: CleanerWaveContext,
 ) -> None:
     """Processes a single wave of classification batches using the persistent thread pool."""
     future_to_batch = {
-        executor.submit(call_batch_classification, batch, config, session): batch
+        executor.submit(call_batch_classification, batch, ctx.config, ctx.session): batch
         for batch in current_wave
     }
     for future in as_completed(future_to_batch):
         batch = future_to_batch[future]
         results = future.result()
-        with lock:
+        with ctx.lock:
             for _idx, key, text in batch:
                 if results.get(key, True):
-                    state.cleaned_data[key] = text
+                    ctx.state.cleaned_data[key] = text
                 else:
-                    state.quarantine_data[key] = {
+                    ctx.state.quarantine_data[key] = {
                         "val": text,
                         "stage": "Stage 2 (LLM)",
-                        "reason": f"Flagged as internal dev junk by {config['model']}",
+                        "reason": f"Flagged as internal dev junk by {ctx.config['model']}",
                     }
-                state.processed_keys.add(key)
+                ctx.state.processed_keys.add(key)
 
 
 def _execute_stage2_waves(
@@ -345,15 +369,16 @@ def _execute_stage2_waves(
     )
 
     session = requests.Session()
-    adapter = requests.adapters.HTTPAdapter(pool_connections=max_workers, pool_maxsize=max_workers)
+    adapter = FastLocalAdapter(pool_connections=max_workers, pool_maxsize=max_workers)
     session.mount("http://", adapter)
     session.mount("https://", adapter)
 
     lock = threading.RLock()
+    ctx = CleanerWaveContext(config=config, session=session, lock=lock, state=state)
     try:
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             for wave_idx, current_wave in enumerate(waves, 1):
-                _process_wave_with_executor(executor, current_wave, config, session, lock, state)
+                _process_wave_with_executor(executor, current_wave, ctx)
                 if wave_idx % save_interval == 0 or wave_idx == len(waves):
                     print(f"Wave {wave_idx}/{len(waves)} complete. Autosaving progress...")
                     save_progress(

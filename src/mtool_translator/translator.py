@@ -1,21 +1,17 @@
-"""
-Stage 2 Translation Engine for Game Localization JSON.
-------------------------------------------------------
-Translates Japanese game text into English using local or OpenAI-compatible LLMs.
-Includes token-aware chunking, translation blueprint generation, and checkpoint recovery.
-"""
+"""Batched LLM translation module with token-aware chunking and progressive checkpointing."""
 
 from __future__ import annotations
 
 import logging
 import re
+import socket
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
+from transformers import AutoTokenizer
 
 from .config import load_config, resolve_input_path, resolve_output_path
 from .utils import (
@@ -27,106 +23,86 @@ from .utils import (
     parse_llm_json_response,
 )
 
-logger = logging.getLogger("mtool_translator.translator")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logger = logging.getLogger(__name__)
 
-SUMMARY_BATCH_SIZE = 1000
-WORKER_COUNT = 2
+ERROR_PATTERNS = [
+    "system error",
+    "internal error",
+    "error:",
+    "exception:",
+    "traceback",
+    "rate limit exceeded",
+    "quota exceeded",
+    "model overloaded",
+]
 
-JP_SOURCE_REGEX = re.compile(r"[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]")
+DEFAULT_MAX_TOKENS = 1500
+JP_SOURCE_REGEX = re.compile(r"[\u3040-\u30ff\u4e00-\u9faf]")
 
-ERROR_PATTERNS = (
-    "translation failed",
-    "unable to translate",
-    "error occurred",
-    "something went wrong",
-    "as an ai",
-    "i cannot translate",
-    "translator note:",
-)
+
+class FastLocalAdapter(requests.adapters.HTTPAdapter):
+    """Custom HTTP adapter enabling TCP_NODELAY for ultra-low latency local API calls."""
+
+    def init_poolmanager(self, *args: Any, **kwargs: Any) -> None:
+        kwargs["socket_options"] = [(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)]
+        super().init_poolmanager(*args, **kwargs)
 
 
 class TokenAwareChunker:
-    """Calculates context limits and splits text arrays into safe batches."""
+    """Chunks text into token-budgeted batches based on Hugging Face tokenizers."""
 
     def __init__(
         self,
-        n_ctx: int = 131072,
-        reasoning_buffer: int = 8000,
-        expansion_factor: float = 1.2,
-        model_name: Optional[str] = None,
+        model_name: str = "meta-llama/Meta-Llama-3-8B-Instruct",
+        max_tokens: int = DEFAULT_MAX_TOKENS,
     ):
-        self.n_ctx = n_ctx
-        self.tokenizer = None
-
-        if model_name:
-            try:
-                from transformers import AutoTokenizer  # pylint: disable=import-outside-toplevel
-
-                self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-            except Exception as err:  # pylint: disable=broad-exception-caught
-                logger.warning("Could not load tokenizer (%s). Using heuristic.", err)
-
-        available_output_space = (n_ctx - reasoning_buffer) / (1 + expansion_factor)
-        self.max_chunk_tokens = int(available_output_space * 0.9)
+        self.max_tokens = max_tokens
+        self.tokenizer: Any = None
+        try:
+            self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        except (OSError, ValueError) as err:
+            logger.warning(
+                "Could not load tokenizer '%s' (%s). Falling back to character-based heuristic.",
+                model_name,
+                err,
+            )
+            self.tokenizer = None
 
     def estimate_tokens(self, text: str) -> int:
-        """Estimates or counts tokens for a string."""
+        """Estimates token count using Hugging Face tokenizer or character-ratio heuristic."""
         if self.tokenizer:
             return len(self.tokenizer.encode(text, add_special_tokens=False))
-        return len(text) // 3
+        return max(1, len(text) // 2)
 
-    def create_chunks(self, lst: List[str]) -> List[List[str]]:
-        """Groups list items into chunks that do not exceed max_chunk_tokens."""
+    def create_chunks(self, texts: List[str]) -> List[List[str]]:
+        """Groups texts into chunks that fit within the token budget."""
         chunks: List[List[str]] = []
         current_chunk: List[str] = []
         current_tokens = 0
 
-        for item in lst:
-            item_tokens = self.estimate_tokens(item)
-
-            if item_tokens > self.max_chunk_tokens:
-                if current_chunk:
-                    chunks.append(current_chunk)
-                    current_chunk = []
-                    current_tokens = 0
-
-                sub_items = item.split("\n")
-                if len(sub_items) > 1:
-                    chunks.extend(self.create_chunks(sub_items))
-                else:
-                    chunks.append([item])
-                continue
-
-            if current_tokens + item_tokens > self.max_chunk_tokens:
+        for text in texts:
+            tokens = self.estimate_tokens(text)
+            if current_tokens + tokens > self.max_tokens and current_chunk:
                 chunks.append(current_chunk)
-                current_chunk = [item]
-                current_tokens = item_tokens
-            else:
-                current_chunk.append(item)
-                current_tokens += item_tokens
+                current_chunk = []
+                current_tokens = 0
+            current_chunk.append(text)
+            current_tokens += tokens
 
         if current_chunk:
             chunks.append(current_chunk)
 
         return chunks
 
-    def process_all(self, lst: List[str], process_fn) -> List[str]:
-        """Splits text list into safe token chunks and processes each chunk."""
-        chunks = self.create_chunks(lst)
+    def process_all(self, texts: List[str], process_func: Any) -> List[Any]:
+        """Processes chunks sequentially using the provided worker function."""
+        chunks = self.create_chunks(texts)
         results = []
 
-        for i, chunk in enumerate(chunks, 1):
+        for i, chunk in enumerate(chunks):
             chunk_text = "\n".join(chunk)
-            estimated_tokens = self.estimate_tokens(chunk_text)
-            logger.info(
-                "[Chunk %d/%d] Tokens: ~%d / Max: %d",
-                i,
-                len(chunks),
-                estimated_tokens,
-                self.max_chunk_tokens,
-            )
-
-            result = process_fn(chunk_text)
+            result = process_func(chunk_text)
             if result:
                 results.append(result)
             else:
@@ -144,10 +120,9 @@ class JSONTranslator:
         self.logger = logger
         self.print_summary = True
 
+        max_workers = self.config.get("max_workers", 4)
         self.session = requests.Session()
-        adapter = requests.adapters.HTTPAdapter(
-            pool_connections=WORKER_COUNT, pool_maxsize=WORKER_COUNT
-        )
+        adapter = FastLocalAdapter(pool_connections=max_workers, pool_maxsize=max_workers)
         self.session.mount("http://", adapter)
         self.session.mount("https://", adapter)
 
@@ -158,7 +133,7 @@ class JSONTranslator:
     def __enter__(self) -> "JSONTranslator":
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         self.close()
 
     def _init_config(self, config_file: str) -> Dict[str, Any]:
@@ -222,7 +197,7 @@ class JSONTranslator:
                 "Common translations file '%s' is not a JSON object.",
                 dict_file,
             )
-        except Exception as err:
+        except (OSError, ValueError, TypeError, KeyError) as err:
             self.logger.error("Failed to load common translations from '%s': %s", dict_file, err)
 
         return {}
@@ -233,29 +208,26 @@ class JSONTranslator:
         translated_data: Dict[str, str],
         common_dict: Dict[str, str],
     ) -> int:
-        """Applies pre-translations from common dictionary for exact or trimmed matches."""
+        """Applies exact dictionary matches before sending batches to the LLM."""
         if not common_dict:
             return 0
 
         pre_count = 0
-        for key, val in original_data.items():
+        for key, value in original_data.items():
             if key in translated_data:
                 continue
 
-            val_str = val if isinstance(val, str) else ("" if val is None else str(val))
-            target_str = (
-                val_str if val_str.strip() else (key if isinstance(key, str) else str(key))
-            )
+            target_str = str(value) if value is not None else ""
+            if not target_str:
+                continue
 
-            # Exact match
             if target_str in common_dict:
                 translated_data[key] = common_dict[target_str]
                 pre_count += 1
                 continue
 
-            # Whitespace-trimmed match with fast boundary detection
             stripped = target_str.strip()
-            if stripped and stripped in common_dict:
+            if stripped in common_dict:
                 n_orig = len(target_str)
                 n_strip = len(stripped)
                 if n_orig == n_strip:
@@ -307,7 +279,7 @@ class JSONTranslator:
                 result_stripped = resp.json()["choices"][0]["message"]["content"].strip()
                 self.logger.info("Section summary generated successfully.")
                 return result_stripped
-        except Exception as err:
+        except (requests.RequestException, ValueError, KeyError) as err:
             self.logger.error("Summarize request failed: %s", err)
         return None
 
@@ -349,7 +321,7 @@ class JSONTranslator:
                 result_stripped = resp.json()["choices"][0]["message"]["content"].strip()
                 self.logger.info("Reduced summary generated successfully.")
                 return result_stripped
-        except Exception as err:
+        except (requests.RequestException, ValueError, KeyError) as err:
             self.logger.error("Summarize summaries request failed: %s", err)
         return None
 
@@ -471,7 +443,7 @@ class JSONTranslator:
                     return fallback_results
                 else:
                     self.logger.error("API Error (%d): %s", resp.status_code, resp.text)
-            except Exception as err:
+            except (requests.RequestException, ValueError, KeyError) as err:
                 self.logger.error("Attempt %d error during translation: %s", attempt + 1, err)
 
             if attempt < self.config["max_retries"] - 1:
@@ -522,7 +494,7 @@ class JSONTranslator:
                 if isinstance(data, dict):
                     self.logger.info("Loaded %d items from progress file.", len(data))
                     return data
-            except Exception as err:
+            except (OSError, ValueError, TypeError, KeyError) as err:
                 self.logger.error("Failed to load progress file: %s", err)
         return {}
 
@@ -533,20 +505,29 @@ class JSONTranslator:
 
         search = JP_SOURCE_REGEX.search
         filtered_data = {
-            k: v
-            for k, v in original_data.items()
-            if (v if isinstance(v, str) else str(v))
-            and not (isinstance(v, str) and v.isascii())
-            and search(v if isinstance(v, str) else str(v))
+            key: value
+            for key, value in original_data.items()
+            if value and search(str(value) if not isinstance(value, str) else value)
         }
-        excluded = len(original_data) - len(filtered_data)
-        print(f"Kept {len(filtered_data)} Japanese lines. Excluded {excluded} non-Japanese lines.")
+        filtered_out = len(original_data) - len(filtered_data)
+        if filtered_out > 0:
+            self.logger.info("Filtered out %d non-Japanese lines.", filtered_out)
         return filtered_data
 
-    def _ensure_summary(self, summary_path: Path, data: Dict[str, Any], auto_confirm: bool) -> str:
-        """Loads or generates translation summary blueprint."""
+    def generate_blueprint(
+        self,
+        original_data: Dict[str, Any],
+        summary_path: Path,
+        auto_confirm: bool = False,
+    ) -> str:
+        """Generates or loads existing Translation Blueprint for character and tone consistency."""
         if not summary_path.exists():
-            raw_texts = [str(v) for v in data.values()]
+            print("\n--- Generating Translation Blueprint ---")
+            raw_texts = [
+                str(v)
+                for v in original_data.values()
+                if v and len(str(v).strip()) > 3 and not str(v).strip().isdigit()
+            ]
             summary_batches = self.chunker.process_all(raw_texts, self.summarize)
             summary = self.reduce_summaries(summary_batches)
 
@@ -586,12 +567,13 @@ class JSONTranslator:
     ) -> None:
         """Executes batched translations in waves with intermediate autosaves."""
         batch_size = self.config["batch_size"]
+        worker_count = self.config.get("max_workers", 4)
         all_batches = [items[i : i + batch_size] for i in range(0, len(items), batch_size)]
         giga_chunks = [
-            all_batches[i : i + WORKER_COUNT] for i in range(0, len(all_batches), WORKER_COUNT)
+            all_batches[i : i + worker_count] for i in range(0, len(all_batches), worker_count)
         ]
 
-        with ThreadPoolExecutor(max_workers=WORKER_COUNT) as executor:
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
             for giga_index, giga_chunk in enumerate(giga_chunks):
                 self._run_wave_with_executor(executor, giga_chunk, summary, translated_data)
                 self.save_progress(translated_data, progress_path)
@@ -618,88 +600,32 @@ class JSONTranslator:
 
         translated_data = self.load_progress(progress_path)
         common_dict = self._load_common_translations()
-        pre_count = self._apply_pre_translations(original_data, translated_data, common_dict)
-        if pre_count > 0:
-            self.logger.info("Pre-translated %d lines using common dictionary.", pre_count)
+
+        pre_translated_count = self._apply_pre_translations(
+            original_data, translated_data, common_dict
+        )
+        if pre_translated_count > 0:
+            self.logger.info("Applied %d common pre-translations.", pre_translated_count)
             self.save_progress(translated_data, progress_path)
 
-        items = [
-            (k, v)
-            for k, v in original_data.items()
-            if k not in translated_data and v and str(v).strip()
+        untranslated_items = [
+            (str(key), str(val))
+            for key, val in original_data.items()
+            if key not in translated_data
         ]
 
-        self.logger.info("Total lines: %d | Pending: %d", len(original_data), len(items))
+        if not untranslated_items:
+            self.logger.info("All items are already translated.")
+            self.save_progress(translated_data, output_file)
+            return True
 
-        if items:
-            summary_data = dict(items)
-            summary = self._ensure_summary(summary_path, summary_data, auto_confirm)
-            self._translate_batches(items, summary, translated_data, progress_path)
-        else:
-            self.logger.info(
-                "All lines resolved via pre-translation or checkpoint. No LLM calls needed."
-            )
+        summary = self.generate_blueprint(original_data, summary_path, auto_confirm=auto_confirm)
 
-        dump_json_file(output_file, translated_data, indent=True)
-        self.logger.info("Translation completed successfully: %s", output_file)
+        self._translate_batches(untranslated_items, summary, translated_data, progress_path)
 
-        if progress_path.exists():
-            try:
-                progress_path.unlink()
-            except OSError:
-                pass
-
+        self.save_progress(translated_data, output_file)
+        self.logger.info("Translation complete. Saved to %s", output_file)
         return True
-
-
-def _setup_translation_logger(log_path: Path) -> None:
-    """Configures file and console logging handlers for translation."""
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    if not logger.handlers:
-        file_handler = logging.FileHandler(str(log_path), encoding="utf-8")
-        stream_handler = logging.StreamHandler()
-        formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
-        file_handler.setFormatter(formatter)
-        stream_handler.setFormatter(formatter)
-        logger.setLevel(logging.INFO)
-        logger.addHandler(file_handler)
-        logger.addHandler(stream_handler)
-
-
-def _resolve_translation_paths(
-    translator: JSONTranslator, input_file: Optional[str], output_file: Optional[str]
-) -> Tuple[Path, Path]:
-    """Resolves input and output file paths for translation."""
-    target_input = input_file or translator.config.get(
-        "input_filename", "ManualTransFile_cleaned.json"
-    )
-    resolved_in = resolve_input_path(target_input, default_subfolder="processed")
-    if not resolved_in.exists():
-        resolved_in = resolve_input_path(target_input, default_subfolder="raw")
-
-    if output_file:
-        resolved_out = Path(output_file)
-    else:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        resolved_out = resolve_output_path(
-            f"translated_{timestamp}.json", default_subfolder="processed"
-        )
-    return resolved_in, resolved_out
-
-
-def _check_resume_prompts(progress_file: Path, summary_file: Path, auto_confirm: bool) -> None:
-    """Interactively prompts user to resume or discard prior checkpoints."""
-    if auto_confirm:
-        return
-    if progress_file.exists():
-        response = input("Found existing progress file. Resume? (y/n): ")
-        if response.lower() not in ["y", "yes"]:
-            progress_file.unlink()
-
-    if summary_file.exists():
-        response = input("Found existing summary file. Use it? (y/n): ")
-        if response.lower() not in ["y", "yes"]:
-            summary_file.unlink()
 
 
 def process_translation(
@@ -708,31 +634,35 @@ def process_translation(
     output_file: Optional[str] = None,
     auto_confirm: bool = False,
 ) -> Path:
-    """Entrypoint function for translation stage."""
-    log_path = resolve_output_path("translation.log", default_subfolder="processed")
-    _setup_translation_logger(log_path)
+    """Processes JSON translation and returns the output path."""
+    config = load_config(config_file, section="translation")
+    in_file = resolve_input_path(
+        input_file or config.get("input_filename", "ManualTransFile_cleaned.json"),
+        default_subfolder="processed",
+    )
+    out_file = resolve_output_path(
+        output_file or config.get("output_filename", "ManualTransFile_translated.json"),
+        default_subfolder="processed",
+    )
 
-    translator = JSONTranslator(config_file)
-    try:
-        resolved_input, resolved_output = _resolve_translation_paths(
-            translator, input_file, output_file
-        )
-
-        if not resolved_input.exists():
-            print(f"Error: Translation input file '{resolved_input.name}' not found.")
-            return resolved_input
-
-        progress_file = resolve_output_path(
-            "translation_progress.json", default_subfolder="processed"
-        )
-        summary_file = resolve_output_path("summary.txt", default_subfolder="processed")
-
-        _check_resume_prompts(progress_file, summary_file, auto_confirm)
-
-        print(f"Starting translation processing: {resolved_input} -> {resolved_output}...")
+    with JSONTranslator(config_file=config_file) as translator:
         translator.translate_json_file(
-            resolved_input, resolved_output, progress_file, summary_file, auto_confirm=auto_confirm
+            input_file=in_file, output_file=out_file, auto_confirm=auto_confirm
         )
-        return resolved_output
-    finally:
-        translator.close()
+    return out_file
+
+
+def translate_json(
+    config_file: str = "config.json",
+    input_file: Optional[str] = None,
+    output_file: Optional[str] = None,
+    auto_confirm: bool = False,
+) -> bool:
+    """Entrypoint function to run JSON translation pipeline."""
+    process_translation(
+        config_file=config_file,
+        input_file=input_file,
+        output_file=output_file,
+        auto_confirm=auto_confirm,
+    )
+    return True

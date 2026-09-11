@@ -26,6 +26,7 @@ warn_unused_configs = true
 
 [tool.pylint.main]
 source-roots = ["src", "."]
+extension-pkg-allow-list = ["orjson"]
 
 [tool.pylint.format]
 max-line-length = 100

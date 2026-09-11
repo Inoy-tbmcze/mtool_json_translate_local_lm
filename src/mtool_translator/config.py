@@ -13,6 +13,7 @@ try:
         with open(path, "rb") as f:
             data = orjson.loads(f.read())
             return data if isinstance(data, dict) else {}
+
 except ImportError:
     import json
 
@@ -38,14 +39,7 @@ def get_project_root() -> Path:
 
 
 def resolve_input_path(filename: Union[str, Path], default_subfolder: str = "raw") -> Path:
-    """
-    Resolves an input file path:
-    1. Exact path if absolute or relative to cwd.
-    2. data/<default_subfolder>/<filename>
-    3. data/reference/<filename> or data/dictionaries/<filename>
-    4. data/raw/<filename> or data/processed/<filename>
-    5. Project root / <filename>
-    """
+    """Resolves an input file path across standard search locations."""
     path = Path(filename)
     if path.is_absolute() and path.exists():
         return path
@@ -102,7 +96,7 @@ def load_config(
     if config_path.exists():
         try:
             raw_config = _read_json_file(config_path)
-        except Exception as err:
+        except (OSError, ValueError, TypeError, KeyError) as err:
             print(f"Warning: Failed to read '{config_path.name}' ({err}). Using defaults.")
     else:
         print(f"Notice: Config file '{config_file}' not found. Using defaults.")

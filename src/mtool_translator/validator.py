@@ -1,12 +1,13 @@
-"""
-Stage 3 Translation Validation Module for Game Localization JSON.
-------------------------------------------------------------------
+"""Stage 3 Translation Validation Module for Game Localization JSON.
+
 Validates Japanese -> English translations using local LLM auditor.
 Separates passed translations from failed lines needing retranslation.
 """
 
 from __future__ import annotations
 
+import json
+import socket
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -15,9 +16,18 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 import requests
+from json_repair import repair_json
 
 from .config import load_config, resolve_input_path, resolve_output_path
 from .utils import dump_json_file, fast_json_dumps_bytes, fast_json_loads, load_json_file
+
+
+class FastLocalAdapter(requests.adapters.HTTPAdapter):
+    """Custom HTTP adapter enabling TCP_NODELAY for ultra-low latency local API calls."""
+
+    def init_poolmanager(self, *args: Any, **kwargs: Any) -> None:
+        kwargs["socket_options"] = [(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)]
+        super().init_poolmanager(*args, **kwargs)
 
 
 @dataclass
@@ -39,6 +49,16 @@ class ValidationState:
     processed_keys: Set[str]
 
 
+@dataclass
+class ValidationWaveContext:
+    """Bundles shared context parameters for validation wave execution."""
+
+    config: Dict[str, Any]
+    session: requests.Session
+    lock: threading.RLock
+    state: ValidationState
+
+
 def _parse_validation_json(content: str) -> Dict[str, Any]:
     """Extracts and parses JSON object from LLM response content."""
     if not content:
@@ -53,20 +73,44 @@ def _parse_validation_json(content: str) -> Dict[str, Any]:
                 res = fast_json_loads(s[start_idx : end_idx + 1])
                 if isinstance(res, dict):
                     return res
-            except Exception:
+            except (ValueError, TypeError, json.JSONDecodeError):
                 pass
 
     try:
-        from json_repair import repair_json
-
         repaired = repair_json(s)
         res = fast_json_loads(repaired)
         if isinstance(res, dict):
             return res
-    except Exception:
+    except (ValueError, TypeError, json.JSONDecodeError):
         pass
 
     return {}
+
+
+def _send_validation_request(
+    prompt: str, config: Dict[str, Any], session: Optional[requests.Session]
+) -> Dict[str, Any]:
+    """Sends validation payload to LLM and returns parsed mapping."""
+    req_data = {
+        "model": config["model"],
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.0,
+        "max_tokens": 1024,
+    }
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {config.get('api_key', 'lm-studio')}",
+    }
+    requester = session or requests
+    resp = requester.post(
+        config["api_endpoint"],
+        headers=headers,
+        data=fast_json_dumps_bytes(req_data),
+        timeout=config["request_timeout"],
+    )
+    resp.raise_for_status()
+    raw_content = resp.json()["choices"][0]["message"]["content"].strip()
+    return _parse_validation_json(raw_content)
 
 
 def call_batch_validation(
@@ -89,35 +133,13 @@ def call_batch_validation(
         f"Pairs to validate:\n{items_str}"
     )
 
-    data = {
-        "model": config["model"],
-        "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.0,
-        "max_tokens": 1024,
-    }
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {config.get('api_key', 'lm-studio')}",
-    }
-
     results = {jp: True for _idx, jp, _en in batch}
-    payload = fast_json_dumps_bytes(data)
-
     try:
-        requester = session or requests
-        resp = requester.post(
-            config["api_endpoint"],
-            headers=headers,
-            data=payload,
-            timeout=config["request_timeout"],
-        )
-        resp.raise_for_status()
-        raw_content = resp.json()["choices"][0]["message"]["content"].strip()
-        parsed = _parse_validation_json(raw_content)
+        parsed = _send_validation_request(prompt, config, session)
         for idx, jp, _en in batch:
             val = parsed.get(str(idx), 1)
             results[jp] = bool(val == 1 or val is True or str(val).lower() == "true")
-    except Exception as err:
+    except (requests.RequestException, ValueError, KeyError) as err:
         print(f"\nWarning: Batch validation request failed ({err}). Defaulting items to VALID (1).")
 
     return results
@@ -190,7 +212,7 @@ def _load_validation_state(paths: ValidationPaths) -> ValidationState:
             if isinstance(chk, dict):
                 processed_keys = set(chk.get("processed_keys", []))
             print(f"--> Found existing checkpoint: {len(processed_keys)} items already processed.")
-        except Exception as err:
+        except (OSError, ValueError, TypeError, KeyError) as err:
             print(f"Warning: Could not read checkpoint file ({err}). Starting fresh.")
 
     for check_p, data_dict in (
@@ -203,7 +225,7 @@ def _load_validation_state(paths: ValidationPaths) -> ValidationState:
                 if isinstance(loaded, dict):
                     data_dict.update(loaded)
                     processed_keys.update(loaded.keys())
-            except Exception:
+            except (OSError, ValueError, TypeError):
                 pass
 
     return ValidationState(validated_data, retranslate_data, processed_keys)
@@ -212,26 +234,23 @@ def _load_validation_state(paths: ValidationPaths) -> ValidationState:
 def _process_validation_wave_with_executor(
     executor: ThreadPoolExecutor,
     current_wave: List[List[Tuple[int, str, str]]],
-    config: Dict[str, Any],
-    session: requests.Session,
-    lock: threading.RLock,
-    state: ValidationState,
+    ctx: ValidationWaveContext,
 ) -> None:
     """Processes a single parallel wave of validation batches using persistent thread pool."""
     future_to_batch = {
-        executor.submit(call_batch_validation, batch, config, session): batch
+        executor.submit(call_batch_validation, batch, ctx.config, ctx.session): batch
         for batch in current_wave
     }
     for future in as_completed(future_to_batch):
         batch = future_to_batch[future]
         results = future.result()
-        with lock:
+        with ctx.lock:
             for _idx, jp, en in batch:
                 if results.get(jp, True):
-                    state.validated_data[jp] = en
+                    ctx.state.validated_data[jp] = en
                 else:
-                    state.retranslate_data[jp] = jp
-                state.processed_keys.add(jp)
+                    ctx.state.retranslate_data[jp] = jp
+                ctx.state.processed_keys.add(jp)
 
 
 def _run_validation_waves(
@@ -247,16 +266,15 @@ def _run_validation_waves(
     waves = [batches[i : i + max_workers] for i in range(0, len(batches), max_workers)]
 
     session = requests.Session()
-    adapter = requests.adapters.HTTPAdapter(pool_connections=max_workers, pool_maxsize=max_workers)
+    adapter = FastLocalAdapter(pool_connections=max_workers, pool_maxsize=max_workers)
     session.mount("http://", adapter)
     session.mount("https://", adapter)
 
+    ctx = ValidationWaveContext(config=config, session=session, lock=lock, state=state)
     try:
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             for wave_idx, current_wave in enumerate(waves, 1):
-                _process_validation_wave_with_executor(
-                    executor, current_wave, config, session, lock, state
-                )
+                _process_validation_wave_with_executor(executor, current_wave, ctx)
                 if wave_idx % save_interval == 0 or wave_idx == len(waves):
                     print(f"Wave {wave_idx}/{len(waves)} complete. Autosaving progress...")
                     save_progress(paths, state, lock)

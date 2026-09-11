@@ -2,43 +2,51 @@
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 from typing import Any, Optional, Set, Union
 
 from json_repair import repair_json
 
+from .native_core import fast_count_symbols, fast_has_repeated_chars
+
 try:
     import orjson
 
     def fast_json_loads(data: Union[str, bytes]) -> Any:
+        """Fast JSON deserializer using high-performance orjson."""
         return orjson.loads(data)
 
     def fast_json_dumps(obj: Any, indent: bool = False) -> str:
+        """Fast JSON serializer to string using high-performance orjson."""
         opt = orjson.OPT_INDENT_2 if indent else 0
         return orjson.dumps(obj, option=opt).decode("utf-8")
 
     def fast_json_dumps_bytes(obj: Any, indent: bool = False) -> bytes:
+        """Fast JSON serializer to bytes using high-performance orjson."""
         opt = orjson.OPT_INDENT_2 if indent else 0
         return orjson.dumps(obj, option=opt)
 
 except ImportError:
-    import json
 
     def fast_json_loads(data: Union[str, bytes]) -> Any:
+        """Fallback JSON deserializer using standard library json."""
         return json.loads(data)
 
     def fast_json_dumps(obj: Any, indent: bool = False) -> str:
+        """Fallback JSON serializer to string using standard library json."""
         return json.dumps(obj, ensure_ascii=False, indent=2 if indent else None)
 
     def fast_json_dumps_bytes(obj: Any, indent: bool = False) -> bytes:
+        """Fallback JSON serializer to bytes using standard library json."""
         return json.dumps(obj, ensure_ascii=False, indent=2 if indent else None).encode("utf-8")
 
 
 def load_json_file(file_path: Union[str, Path]) -> Any:
     """Fast binary JSON file loader."""
-    with open(file_path, "rb") as f:
-        return fast_json_loads(f.read())
+    with open(file_path, "rb") as file_handle:
+        return fast_json_loads(file_handle.read())
 
 
 def dump_json_file(file_path: Union[str, Path], data: Any, indent: bool = True) -> None:
@@ -46,8 +54,8 @@ def dump_json_file(file_path: Union[str, Path], data: Any, indent: bool = True) 
     target = Path(file_path)
     target.parent.mkdir(parents=True, exist_ok=True)
     payload = fast_json_dumps_bytes(data, indent=indent)
-    with open(target, "wb") as f:
-        f.write(payload)
+    with open(target, "wb") as file_handle:
+        file_handle.write(payload)
 
 
 DEFAULT_MIN_JAPANESE_RATIO = 0.8
@@ -104,6 +112,8 @@ FILE_EXTENSIONS = (
     ".txt",
 )
 
+FILE_EXTENSIONS_SET = frozenset(FILE_EXTENSIONS)
+
 PURE_ASCII_IDENTIFIER_PATTERN = re.compile(r"^[a-zA-Z0-9_\-\.\(\)\s]+$")
 
 ENGINE_KEY_RE = re.compile(
@@ -157,9 +167,7 @@ DEV_COMMENT_STARTERS = frozenset("/#<【tfdhbnメ仮未要後仕開TFDHBN")
 JAPANESE_SENTENCE_PUNCTUATION = ("。", "！", "？", "…", "...", "」", "♪", "〜")
 
 _SENTENCE_PUNCT_RE = re.compile(r"[。！？…」♪〜]|\.\.\.")
-_CODE_CHARS = frozenset(r"/\}{}=<>")
-_SYMBOL_CHARS = frozenset(r"=-_*+#/\|~<>[]{}()!@$%^&:`';")
-_REPEATED_CHAR_RE = re.compile(r"(.)\1{4,}")
+_CODE_CHARS = frozenset(r"/\\}{}=<>")
 
 JP_CHAR_PATTERN = re.compile(r"[\u3040-\u30ff\u4e00-\u9faf]")
 
@@ -204,7 +212,7 @@ def load_japanese_symbols(symbols_path: Optional[Union[Path, str]] = None) -> Se
                 symbols_list = load_json_file(target_path)
                 if isinstance(symbols_list, list):
                     return set(symbols_list)
-            except Exception:
+            except (OSError, ValueError, TypeError):
                 pass
     return set(DEFAULT_JP_SYMBOLS)
 
@@ -219,7 +227,7 @@ def calculate_japanese_ratio(text: str, jp_regex: re.Pattern) -> float:
     """Calculates the proportion of Japanese characters in a string."""
     if not text:
         return 0.0
-    jp_char_count = jp_regex.subn("", text)[1]
+    jp_char_count = len(jp_regex.findall(text))
     return jp_char_count / len(text)
 
 
@@ -229,23 +237,25 @@ def has_japanese_characters(text: str, jp_regex: re.Pattern) -> bool:
 
 
 def is_ascii_art_or_symbol_heavy(text: str, jp_regex: re.Pattern) -> bool:
-    """Detects ASCII art or symbol-heavy lines."""
+    """Detects ASCII art or symbol-heavy lines using low-level symbol counting."""
     if not text:
         return False
     n = len(text)
     if n > 5:
-        symbol_count = sum(1 for c in text if c in _SYMBOL_CHARS)
+        symbol_count = fast_count_symbols(text)
         if (symbol_count / n) > 0.5:
             return True
-    if _REPEATED_CHAR_RE.search(text) and not jp_regex.search(text):
+    if fast_has_repeated_chars(text, min_repeat=5) and not jp_regex.search(text):
         return True
     return False
 
 
 def clean_japanese_text(text: str) -> str:
-    """Replaces full-width symbols with standard equivalents for translation readability."""
+    """Replaces full-width symbols with standard equivalents with fast rejection check."""
     if not text:
         return ""
+    if "…" not in text and "！" not in text and "”" not in text and "“" not in text:
+        return text
     if "…" in text:
         text = text.replace("…", "...")
     if "！" in text:
@@ -273,13 +283,16 @@ def parse_llm_json_response(response_text: str) -> dict:
         parsed = fast_json_loads(raw)
         if isinstance(parsed, dict):
             return parsed
-    except Exception:
+    except (ValueError, TypeError, json.JSONDecodeError):
         pass
 
-    repaired_json_str = repair_json(raw)
-    parsed = fast_json_loads(repaired_json_str)
-    if isinstance(parsed, dict):
-        return parsed
+    try:
+        repaired_json_str = repair_json(raw)
+        parsed = fast_json_loads(repaired_json_str)
+        if isinstance(parsed, dict):
+            return parsed
+    except (ValueError, TypeError, json.JSONDecodeError) as err:
+        raise ValueError("Failed to repair JSON output.") from err
 
     raise ValueError("Parsed output is not a dictionary.")
 
@@ -298,7 +311,7 @@ def parse_json_array_safely(content: str) -> list:
                 res = fast_json_loads(s[start_idx : end_idx + 1])
                 if isinstance(res, list):
                     return res
-            except Exception:
+            except (ValueError, TypeError, json.JSONDecodeError):
                 pass
 
         last_comma = s.rfind(",")
@@ -308,7 +321,7 @@ def parse_json_array_safely(content: str) -> list:
                 res = fast_json_loads(repaired)
                 if isinstance(res, list):
                     return res
-            except Exception:
+            except (ValueError, TypeError, json.JSONDecodeError):
                 pass
 
     try:
@@ -316,7 +329,7 @@ def parse_json_array_safely(content: str) -> list:
         res = fast_json_loads(repaired)
         if isinstance(res, list):
             return res
-    except Exception:
+    except (ValueError, TypeError, json.JSONDecodeError):
         pass
 
     return []
