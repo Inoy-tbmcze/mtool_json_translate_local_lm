@@ -17,7 +17,8 @@ import sys
 import threading
 import time
 import urllib.parse
-from typing import Any, Dict, List, Optional, Tuple, Union
+from types import TracebackType
+from typing import Any, Self
 
 from .utils import fast_json_dumps_bytes, fast_json_loads
 
@@ -38,8 +39,8 @@ class HttpRequestError(Exception):
     def __init__(
         self,
         message: str,
-        status_code: Optional[int] = None,
-        response: Optional["HttpResponse"] = None,
+        status_code: int | None = None,
+        response: HttpResponse | None = None,
     ) -> None:
         super().__init__(message)
         self.status_code = status_code
@@ -65,18 +66,18 @@ RequestException = HttpRequestError
 class HttpResponse:
     """Lightweight, slot-optimized HTTP response wrapper."""
 
-    __slots__ = ("status_code", "content", "_text", "headers")
+    __slots__ = ("_text", "content", "headers", "status_code")
 
     def __init__(
         self,
         status_code: int,
         content: bytes,
-        headers: Optional[Dict[str, str]] = None,
+        headers: dict[str, str] | None = None,
     ) -> None:
         self.status_code = status_code
         self.content = content
-        self._text: Optional[str] = None
-        self.headers: Dict[str, str] = headers or {}
+        self._text: str | None = None
+        self.headers: dict[str, str] = headers or {}
 
     @property
     def text(self) -> str:
@@ -106,11 +107,11 @@ class HttpResponse:
 def _create_optimized_socket(
     host: str,
     port: int,
-    timeout: Optional[float] = None,
+    timeout: float | None = None,
 ) -> socket.socket:
     """Creates a raw TCP socket with TCP_NODELAY, SO_KEEPALIVE, and SIO_LOOPBACK_FAST_PATH."""
     addrinfo = socket.getaddrinfo(host, port, socket.AF_UNSPEC, socket.SOCK_STREAM)
-    last_err: Optional[Exception] = None
+    last_err: Exception | None = None
 
     for af, socktype, proto, _canonname, sa in addrinfo:
         sock = socket.socket(af, socktype, proto)
@@ -141,7 +142,7 @@ def _create_optimized_socket(
 class _FastHTTPConnection(http.client.HTTPConnection):
     """Custom HTTPConnection applying native socket optimizations and atomic header-body sends."""
 
-    _buffer: List[bytes]
+    _buffer: list[bytes]
 
     def __init__(self, host: str, port: int, timeout: float = 60.0) -> None:
         super().__init__(host, port, timeout=timeout)
@@ -170,7 +171,7 @@ class _FastHTTPConnection(http.client.HTTPConnection):
 class _FastHTTPSConnection(http.client.HTTPSConnection):
     """Custom HTTPSConnection applying TLS wrapping and atomic header-body sends."""
 
-    _buffer: List[bytes]
+    _buffer: list[bytes]
 
     def __init__(self, host: str, port: int, timeout: float = 60.0) -> None:
         super().__init__(host, port, timeout=timeout)
@@ -213,17 +214,15 @@ class _HostConnectionPool:
         self.port = port
         self.max_size = max_size
         self.keepalive_timeout = keepalive_timeout
-        self._pool: List[Tuple[Union[_FastHTTPConnection, _FastHTTPSConnection], float]] = []
+        self._pool: list[tuple[_FastHTTPConnection | _FastHTTPSConnection, float]] = []
         self._lock = threading.Lock()
 
-    def _create_conn(self, timeout: float) -> Union[_FastHTTPConnection, _FastHTTPSConnection]:
+    def _create_conn(self, timeout: float) -> _FastHTTPConnection | _FastHTTPSConnection:
         if self.scheme == "https":
             return _FastHTTPSConnection(self.host, self.port, timeout=timeout)
         return _FastHTTPConnection(self.host, self.port, timeout=timeout)
 
-    def acquire(
-        self, timeout: float
-    ) -> Tuple[Union[_FastHTTPConnection, _FastHTTPSConnection], bool]:
+    def acquire(self, timeout: float) -> tuple[_FastHTTPConnection | _FastHTTPSConnection, bool]:
         """Acquires a connection from pool or creates a new one. Returns (conn, is_reused)."""
         now = time.monotonic()
         with self._lock:
@@ -245,7 +244,7 @@ class _HostConnectionPool:
 
         return self._create_conn(timeout), False
 
-    def release(self, conn: Union[_FastHTTPConnection, _FastHTTPSConnection]) -> None:
+    def release(self, conn: _FastHTTPConnection | _FastHTTPSConnection) -> None:
         """Releases an open connection back to the LIFO pool."""
         if getattr(conn, "is_closed", False) or conn.sock is None:
             return
@@ -270,7 +269,7 @@ class _HostConnectionPool:
 
 
 @functools.lru_cache(maxsize=128)
-def _parse_url(url: str) -> Tuple[str, str, int, str]:
+def _parse_url(url: str) -> tuple[str, str, int, str]:
     """Parses URL into scheme, host, port, path_and_query with LRU cache."""
     parsed = urllib.parse.urlsplit(url)
     scheme = parsed.scheme.lower() or "http"
@@ -294,7 +293,7 @@ class FastLocalHttpClient:
         self.max_connections = max_connections
         self.default_timeout = default_timeout
         self.keepalive_timeout = keepalive_timeout
-        self._pools: Dict[Tuple[str, str, int], _HostConnectionPool] = {}
+        self._pools: dict[tuple[str, str, int], _HostConnectionPool] = {}
         self._pools_lock = threading.Lock()
         self._is_closed = False
 
@@ -313,11 +312,11 @@ class FastLocalHttpClient:
 
     @staticmethod
     def _execute_on_conn(
-        conn: Union[_FastHTTPConnection, _FastHTTPSConnection],
+        conn: _FastHTTPConnection | _FastHTTPSConnection,
         method: str,
         path: str,
-        body: Optional[bytes],
-        req_headers: Dict[str, str],
+        body: bytes | None,
+        req_headers: dict[str, str],
     ) -> HttpResponse:
         if conn.sock is None:
             conn.connect()
@@ -346,10 +345,10 @@ class FastLocalHttpClient:
         self,
         method: str,
         url: str,
-        data: Optional[Union[bytes, str]] = None,
-        json: Optional[Any] = None,
-        headers: Optional[Dict[str, str]] = None,
-        timeout: Optional[float] = None,
+        data: bytes | str | None = None,
+        json: Any | None = None,
+        headers: dict[str, str] | None = None,
+        timeout: float | None = None,
     ) -> HttpResponse:
         """Sends an HTTP request with automatic keep-alive retry on stale connection."""
         if self._is_closed:
@@ -359,8 +358,8 @@ class FastLocalHttpClient:
         scheme, host, port, path = _parse_url(url)
         pool = self._get_pool(scheme, host, port)
 
-        payload: Optional[bytes] = None
-        req_headers: Dict[str, str] = {k: str(v) for k, v in headers.items()} if headers else {}
+        payload: bytes | None = None
+        req_headers: dict[str, str] = {k: str(v) for k, v in headers.items()} if headers else {}
         if json is not None:
             payload = fast_json_dumps_bytes(json)
             req_headers.setdefault("Content-Type", "application/json")
@@ -396,7 +395,7 @@ class FastLocalHttpClient:
                     resp = self._execute_on_conn(fresh_conn, method, path, payload, req_headers)
                     pool.release(fresh_conn)
                     return resp
-                except (socket.timeout, TimeoutError) as to_err:
+                except TimeoutError as to_err:
                     fresh_conn.close()
                     raise HttpTimeoutError(
                         f"Request timed out after {req_timeout}s: {url}"
@@ -407,7 +406,7 @@ class FastLocalHttpClient:
                         f"Failed to connect to {url}: {fresh_err}"
                     ) from fresh_err
             raise HttpConnectionError(f"Connection error to {url}: {conn_err}") from conn_err
-        except (socket.timeout, TimeoutError) as to_err:
+        except TimeoutError as to_err:
             conn.close()
             raise HttpTimeoutError(f"Request timed out after {req_timeout}s: {url}") from to_err
         except (OSError, http.client.HTTPException) as err:
@@ -417,10 +416,10 @@ class FastLocalHttpClient:
     def post(
         self,
         url: str,
-        data: Optional[Union[bytes, str]] = None,
-        json: Optional[Any] = None,
-        headers: Optional[Dict[str, str]] = None,
-        timeout: Optional[float] = None,
+        data: bytes | str | None = None,
+        json: Any | None = None,
+        headers: dict[str, str] | None = None,
+        timeout: float | None = None,
     ) -> HttpResponse:
         """Sends a POST request."""
         return self.request("POST", url, data=data, json=json, headers=headers, timeout=timeout)
@@ -428,8 +427,8 @@ class FastLocalHttpClient:
     def get(
         self,
         url: str,
-        headers: Optional[Dict[str, str]] = None,
-        timeout: Optional[float] = None,
+        headers: dict[str, str] | None = None,
+        timeout: float | None = None,
     ) -> HttpResponse:
         """Sends a GET request."""
         return self.request("GET", url, headers=headers, timeout=timeout)
@@ -442,10 +441,15 @@ class FastLocalHttpClient:
                 pool.close()
             self._pools.clear()
 
-    def __enter__(self) -> "FastLocalHttpClient":
+    def __enter__(self) -> Self:
         return self
 
-    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
         self.close()
 
 
@@ -455,10 +459,10 @@ atexit.register(default_client.close)
 
 def post(
     url: str,
-    data: Optional[Union[bytes, str]] = None,
-    json: Optional[Any] = None,
-    headers: Optional[Dict[str, str]] = None,
-    timeout: Optional[float] = None,
+    data: bytes | str | None = None,
+    json: Any | None = None,
+    headers: dict[str, str] | None = None,
+    timeout: float | None = None,
 ) -> HttpResponse:
     """Convenience module-level POST using default persistent client."""
     return default_client.post(url, data=data, json=json, headers=headers, timeout=timeout)
@@ -466,8 +470,8 @@ def post(
 
 def get(
     url: str,
-    headers: Optional[Dict[str, str]] = None,
-    timeout: Optional[float] = None,
+    headers: dict[str, str] | None = None,
+    timeout: float | None = None,
 ) -> HttpResponse:
     """Convenience module-level GET using default persistent client."""
     return default_client.get(url, headers=headers, timeout=timeout)

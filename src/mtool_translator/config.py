@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import functools
 from pathlib import Path
-from typing import Any, Union
+from typing import Any
 
 try:
     import orjson
@@ -38,7 +38,7 @@ def get_project_root() -> Path:
     return Path.cwd()
 
 
-def resolve_input_path(filename: Union[str, Path], default_subfolder: str = "raw") -> Path:
+def resolve_input_path(filename: str | Path, default_subfolder: str = "raw") -> Path:
     """Resolves an input file path across standard search locations."""
     path = Path(filename)
     if path.is_absolute() and path.exists():
@@ -68,7 +68,7 @@ def resolve_input_path(filename: Union[str, Path], default_subfolder: str = "raw
     return root / path.name
 
 
-def resolve_output_path(filename: Union[str, Path], default_subfolder: str = "processed") -> Path:
+def resolve_output_path(filename: str | Path, default_subfolder: str = "processed") -> Path:
     """Resolves an output path, directing outputs to data/<default_subfolder> by default."""
     path = Path(filename)
     if path.is_absolute():
@@ -84,7 +84,7 @@ def resolve_output_path(filename: Union[str, Path], default_subfolder: str = "pr
 
 
 def load_config(
-    config_file: Union[str, Path] = "config.json", section: Union[str, None] = None
+    config_file: str | Path = "config.json", section: str | None = None
 ) -> dict[str, Any]:
     """Loads configuration settings from a JSON file and applies defaults."""
     root = get_project_root()
@@ -116,7 +116,13 @@ def load_config(
                 matched_section = val
                 break
 
-        pipeline_keys = ("cleanup", "translation", "translate", "validation", "validate")
+        pipeline_keys = (
+            "cleanup",
+            "translation",
+            "translate",
+            "validation",
+            "validate",
+        )
         if matched_section:
             config.update(matched_section)
         elif not any(k in raw_config for k in pipeline_keys):

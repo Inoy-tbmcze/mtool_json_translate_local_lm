@@ -18,8 +18,8 @@ if str(_SRC_DIR) not in sys.path:
     sys.path.insert(0, str(_SRC_DIR))
 
 __all__ = [
-    "process_validation",
     "call_batch_validation",
+    "process_validation",
     "save_progress",
 ]
 

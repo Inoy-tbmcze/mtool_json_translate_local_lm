@@ -11,7 +11,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any
 
 from .config import load_config, resolve_input_path, resolve_output_path
 from .http_client import FastLocalHttpClient, HttpRequestError, default_client
@@ -51,16 +51,16 @@ class CleanerPaths:
 class CleanerState:
     """Encapsulates processing state dictionaries and tracked keys."""
 
-    cleaned_data: Dict[str, Any]
-    quarantine_data: Dict[str, Any]
-    processed_keys: Set[str]
+    cleaned_data: dict[str, Any]
+    quarantine_data: dict[str, Any]
+    processed_keys: set[str]
 
 
 @dataclass
 class CleanerWaveContext:
     """Bundles shared context parameters for wave execution."""
 
-    config: Dict[str, Any]
+    config: dict[str, Any]
     session: FastLocalHttpClient
     lock: threading.RLock
     state: CleanerState
@@ -68,16 +68,15 @@ class CleanerWaveContext:
 
 def _has_engine_markers(key: str, text: str) -> bool:
     """Checks key and text for engine trigger markers."""
-    if "_" in key or "フレーム" in key or (key and key[0] in "eE"):
-        if ENGINE_KEY_RE.search(key):
-            return True
-    if "_" in text or "フレーム" in text or (text and text[0] in "eE"):
-        if ENGINE_KEY_RE.search(text):
-            return True
-    return False
+    if ("_" in key or "フレーム" in key or (key and key[0] in "eE")) and ENGINE_KEY_RE.search(key):
+        return True
+    return bool(
+        ("_" in text or "フレーム" in text or (text and text[0] in "eE"))
+        and ENGINE_KEY_RE.search(text)
+    )
 
 
-def _is_filepath_or_engine_junk(key: str, text: str) -> Optional[str]:
+def _is_filepath_or_engine_junk(key: str, text: str) -> str | None:
     """Checks fast filepath, asset, identifier, or engine marker junk."""
     if not text:
         return "empty_string"
@@ -102,7 +101,7 @@ def _is_filepath_or_engine_junk(key: str, text: str) -> Optional[str]:
     return None
 
 
-def _is_content_junk(text: str, jp_regex: Any, min_ratio: float) -> Optional[str]:
+def _is_content_junk(text: str, jp_regex: Any, min_ratio: float) -> str | None:
     """Checks character ratio, comment, or symbol junk."""
     if not has_japanese_characters(text, jp_regex):
         return "non_japanese_text"
@@ -126,7 +125,7 @@ def _is_content_junk(text: str, jp_regex: Any, min_ratio: float) -> Optional[str
 
 def is_stage1_junk(
     key: str, text: str, jp_regex: Any, min_ratio: float = DEFAULT_MIN_JAPANESE_RATIO
-) -> Tuple[bool, str]:
+) -> tuple[bool, str]:
     """Returns (is_junk, reason) based on fast heuristic rules."""
     s = text.strip() if text else ""
     k = key.strip() if key else ""
@@ -137,8 +136,8 @@ def is_stage1_junk(
 
 
 def _send_classification_request(
-    prompt: str, config: Dict[str, Any], session: Optional[FastLocalHttpClient] = None
-) -> Set[Any]:
+    prompt: str, config: dict[str, Any], session: FastLocalHttpClient | None = None
+) -> set[Any]:
     """Sends the classification request to the LLM and extracts discarded IDs."""
     req_body = {
         "model": config["model"],
@@ -163,10 +162,10 @@ def _send_classification_request(
 
 
 def call_batch_classification(
-    batch: List[Tuple[int, str, str]],
-    config: Dict[str, Any],
-    session: Optional[FastLocalHttpClient] = None,
-) -> Dict[str, bool]:
+    batch: list[tuple[int, str, str]],
+    config: dict[str, Any],
+    session: FastLocalHttpClient | None = None,
+) -> dict[str, bool]:
     """Sends a batch to the LLM for classification."""
     items_str = "\n".join(f"{idx}:{text}" for idx, _k, text in batch)
     prompt = (
@@ -197,7 +196,7 @@ def save_progress(
     quarantine_path: Path,
     cleaned_data: dict,
     quarantine_data: dict,
-    lock: Optional[threading.RLock] = None,
+    lock: threading.RLock | None = None,
 ) -> None:
     """Saves progress to disk using high-speed binary serialization."""
     try:
@@ -214,8 +213,8 @@ def save_progress(
 
 
 def _init_cleaner_environment(
-    config: Dict[str, Any], input_file: Optional[str], output_dir: Optional[str]
-) -> Tuple[CleanerPaths, Any, float]:
+    config: dict[str, Any], input_file: str | None, output_dir: str | None
+) -> tuple[CleanerPaths, Any, float]:
     """Initializes paths, regexes, and ratio thresholds."""
     input_filename = input_file or config.get("input_filename", "ManualTransFile.json")
     min_ratio = config.get("min_japanese_ratio", DEFAULT_MIN_JAPANESE_RATIO)
@@ -246,11 +245,14 @@ def _init_cleaner_environment(
 
 def _load_existing_progress(paths: CleanerPaths) -> CleanerState:
     """Loads existing progress from cleaned and quarantined files if present."""
-    cleaned_data: Dict[str, Any] = {}
-    quarantine_data: Dict[str, Any] = {}
-    processed_keys: Set[str] = set()
+    cleaned_data: dict[str, Any] = {}
+    quarantine_data: dict[str, Any] = {}
+    processed_keys: set[str] = set()
 
-    for check_p, data_dict in ((paths.cleaned, cleaned_data), (paths.quarantine, quarantine_data)):
+    for check_p, data_dict in (
+        (paths.cleaned, cleaned_data),
+        (paths.quarantine, quarantine_data),
+    ):
         if check_p.exists():
             try:
                 loaded = load_json_file(check_p)
@@ -267,8 +269,8 @@ def _load_existing_progress(paths: CleanerPaths) -> CleanerState:
 
 
 def _run_stage1_filter(
-    data: Dict[str, Any], state: CleanerState, jp_regex: Any, min_ratio: float
-) -> List[Tuple[str, Any]]:
+    data: dict[str, Any], state: CleanerState, jp_regex: Any, min_ratio: float
+) -> list[tuple[str, Any]]:
     """Filters lines using Stage 1 heuristic rules and protected patterns."""
     stage2_candidates = []
     print(f"\n--- Stage 1: Rule-Based Filtering ({len(data)} total lines) ---")
@@ -309,8 +311,8 @@ def _run_stage1_filter(
 
     print("Stage 1 Complete:")
     print(
-        f" - {protected_count} sentences, skill names, items, "
-        "and UI labels protected automatically."
+        f" - {protected_count} sentences, skill names, "
+        "items, and UI labels protected automatically."
     )
     print(f" - {stage1_junk_count} junk lines quarantined.")
     print(f" - {len(stage2_candidates)} ambiguous strings sent to Stage 2 LLM.")
@@ -319,7 +321,7 @@ def _run_stage1_filter(
 
 def _process_wave_with_executor(
     executor: ThreadPoolExecutor,
-    current_wave: List[List[Tuple[int, str, str]]],
+    current_wave: list[list[tuple[int, str, str]]],
     ctx: CleanerWaveContext,
 ) -> None:
     """Processes a single wave of classification batches using the persistent thread pool."""
@@ -344,8 +346,8 @@ def _process_wave_with_executor(
 
 
 def _execute_stage2_waves(
-    batches: List[List[Tuple[int, str, str]]],
-    config: Dict[str, Any],
+    batches: list[list[tuple[int, str, str]]],
+    config: dict[str, Any],
     paths: CleanerPaths,
     state: CleanerState,
 ) -> None:
@@ -380,9 +382,9 @@ def _execute_stage2_waves(
 
 def process_json_file(
     config_file: str = "config.json",
-    input_file: Optional[str] = None,
-    output_dir: Optional[str] = None,
-) -> Tuple[Path, Path]:
+    input_file: str | None = None,
+    output_dir: str | None = None,
+) -> tuple[Path, Path]:
     """Cleans a raw game localization JSON file based on config and heuristics."""
     config = load_config(config_file, section="cleanup")
     paths, jp_regex, min_japanese_ratio = _init_cleaner_environment(config, input_file, output_dir)

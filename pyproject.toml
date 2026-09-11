@@ -9,7 +9,6 @@ description = "Local LLM game localization JSON cleaner, translator, and validat
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "json_repair>=0.60.0",
     "orjson>=3.10.0",
 ]
 
@@ -44,15 +43,9 @@ ignore-comments = true
 ignore-docstrings = true
 ignore-imports = true
 
-[tool.ruff]
-line-length = 100
-target-version = "py310"
-
-[tool.ruff.lint]
-select = ["E", "F", "W", "I"]
-ignore = []
-
 [tool.isort]
 profile = "black"
 line_length = 100
-multi_line_output = 3
+
+[tool.ruff]
+line-length = 100

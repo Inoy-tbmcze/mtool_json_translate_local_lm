@@ -1,2 +1,1 @@
-json_repair>=0.60.0
 orjson>=3.10.0

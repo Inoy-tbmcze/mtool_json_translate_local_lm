@@ -8,7 +8,8 @@ import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from types import TracebackType
+from typing import Any, Self
 
 from .config import load_config, resolve_input_path, resolve_output_path
 from .http_client import FastLocalHttpClient, HttpRequestError
@@ -47,7 +48,7 @@ class TokenAwareChunker:
 
     def __init__(
         self,
-        model_name: Optional[str] = None,
+        model_name: str | None = None,
         max_tokens: int = DEFAULT_MAX_TOKENS,
     ) -> None:
         self.model_name = model_name
@@ -67,10 +68,10 @@ class TokenAwareChunker:
         jp_count, ascii_count = fast_count_jp_and_ascii(text)
         return max(1, math.floor(jp_count * JP_TOKEN_RATIO + ascii_count * ASCII_TOKEN_RATIO))
 
-    def create_chunks(self, texts: List[str]) -> List[List[str]]:
+    def create_chunks(self, texts: list[str]) -> list[list[str]]:
         """Groups texts into chunks that fit within the token budget."""
-        chunks: List[List[str]] = []
-        current_chunk: List[str] = []
+        chunks: list[list[str]] = []
+        current_chunk: list[str] = []
         current_tokens = 0
 
         for text in texts:
@@ -87,7 +88,7 @@ class TokenAwareChunker:
 
         return chunks
 
-    def process_all(self, texts: List[str], process_func: Any) -> List[Any]:
+    def process_all(self, texts: list[str], process_func: Any) -> list[Any]:
         """Processes chunks sequentially using the provided worker function."""
         chunks = self.create_chunks(texts)
         results = []
@@ -119,16 +120,27 @@ class JSONTranslator:
         """Closes the underlying HTTP session."""
         self.session.close()
 
-    def __enter__(self) -> "JSONTranslator":
+    def __enter__(self) -> Self:
         return self
 
-    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
         self.close()
 
-    def _init_config(self, config_file: str) -> Dict[str, Any]:
+    def _init_config(self, config_file: str) -> dict[str, Any]:
         config = load_config(config_file, section="translation")
 
-        required_keys = ["api_endpoint", "api_key", "model", "source_language", "target_language"]
+        required_keys = [
+            "api_endpoint",
+            "api_key",
+            "model",
+            "source_language",
+            "target_language",
+        ]
         for key in required_keys:
             if key not in config:
                 raise ValueError(f"Missing required configuration key: {key}")
@@ -144,7 +156,7 @@ class JSONTranslator:
 
         return config
 
-    def _get_api_headers_and_url(self) -> Tuple[Dict[str, str], str]:
+    def _get_api_headers_and_url(self) -> tuple[dict[str, str], str]:
         if self.config.get("api_type", "openai") == "google":
             headers = {"Content-Type": "application/json"}
             api_url = f"{self.config['api_endpoint']}?key={self.config['api_key']}"
@@ -156,7 +168,7 @@ class JSONTranslator:
             api_url = self.config["api_endpoint"]
         return headers, api_url
 
-    def _load_common_translations(self) -> Dict[str, str]:
+    def _load_common_translations(self) -> dict[str, str]:
         """Loads common game translations dictionary from configured JSON file."""
         if not self.config.get("enable_pre_translation", True):
             return {}
@@ -193,9 +205,9 @@ class JSONTranslator:
 
     def _apply_pre_translations(
         self,
-        original_data: Dict[str, Any],
-        translated_data: Dict[str, str],
-        common_dict: Dict[str, str],
+        original_data: dict[str, Any],
+        translated_data: dict[str, str],
+        common_dict: dict[str, str],
     ) -> int:
         """Applies exact dictionary matches before sending batches to the LLM."""
         if not common_dict:
@@ -314,7 +326,7 @@ class JSONTranslator:
             self.logger.error("Summarize summaries request failed: %s", err)
         return None
 
-    def reduce_summaries(self, lst: List[str], max_depth: int = 5) -> str:
+    def reduce_summaries(self, lst: list[str], max_depth: int = 5) -> str:
         """Combines and reduces summaries hierarchically."""
         if not lst:
             return ""
@@ -354,7 +366,7 @@ class JSONTranslator:
         final_summary = self.summarize_summaries(final_concat)
         return final_summary if final_summary else final_concat
 
-    def translate_batch(self, item: Tuple[int, List[Tuple[str, str]], str]) -> Dict[str, str]:
+    def translate_batch(self, item: tuple[int, list[tuple[str, str]], str]) -> dict[str, str]:
         """Translates a single batch and returns key-translation pairs."""
         _index, texts, summary = item
         fallback_results = dict(texts)
@@ -401,11 +413,11 @@ class JSONTranslator:
     def _send_translation_request(
         self,
         api_url: str,
-        headers: Dict[str, str],
-        data: Dict[str, Any],
-        texts: List[Tuple[str, str]],
-        fallback_results: Dict[str, str],
-    ) -> Dict[str, str]:
+        headers: dict[str, str],
+        data: dict[str, Any],
+        texts: list[tuple[str, str]],
+        fallback_results: dict[str, str],
+    ) -> dict[str, str]:
         payload = fast_json_dumps_bytes(data)
         for attempt in range(self.config["max_retries"]):
             try:
@@ -442,9 +454,9 @@ class JSONTranslator:
         return fallback_results
 
     def _map_translation_response(
-        self, texts: List[Tuple[str, str]], translated_json: Dict[str, Any]
-    ) -> Dict[str, str]:
-        translated_results: Dict[str, str] = {}
+        self, texts: list[tuple[str, str]], translated_json: dict[str, Any]
+    ) -> dict[str, str]:
+        translated_results: dict[str, str] = {}
         for i, (key, original_value) in enumerate(texts):
             lookup_key = str(i + 1)
             if lookup_key in translated_json and translated_json[lookup_key] is not None:
@@ -467,7 +479,7 @@ class JSONTranslator:
         translation_lower = translation.lower()
         return not any(pattern in translation_lower for pattern in ERROR_PATTERNS)
 
-    def save_progress(self, translated_data: Dict[str, str], progress_file: Path) -> None:
+    def save_progress(self, translated_data: dict[str, str], progress_file: Path) -> None:
         """Saves current translation progress dictionary to disk."""
         try:
             dump_json_file(progress_file, translated_data, indent=True)
@@ -475,7 +487,7 @@ class JSONTranslator:
         except OSError as err:
             self.logger.error("Failed to save progress: %s", err)
 
-    def load_progress(self, progress_file: Path) -> Dict[str, str]:
+    def load_progress(self, progress_file: Path) -> dict[str, str]:
         """Loads existing progress dictionary if checkpoint file exists."""
         if progress_file.exists():
             try:
@@ -487,7 +499,7 @@ class JSONTranslator:
                 self.logger.error("Failed to load progress file: %s", err)
         return {}
 
-    def _filter_source_data(self, original_data: Dict[str, Any]) -> Dict[str, Any]:
+    def _filter_source_data(self, original_data: dict[str, Any]) -> dict[str, Any]:
         """Filters out non-Japanese lines when source_language is Japanese."""
         if self.config.get("source_language") != "Japanese":
             return original_data
@@ -505,7 +517,7 @@ class JSONTranslator:
 
     def generate_blueprint(
         self,
-        original_data: Dict[str, Any],
+        original_data: dict[str, Any],
         summary_path: Path,
         auto_confirm: bool = False,
     ) -> str:
@@ -533,9 +545,9 @@ class JSONTranslator:
     def _run_wave_with_executor(
         self,
         executor: ThreadPoolExecutor,
-        giga_chunk: List[List[Tuple[str, str]]],
+        giga_chunk: list[list[tuple[str, str]]],
         summary: str,
-        translated_data: Dict[str, str],
+        translated_data: dict[str, str],
     ) -> None:
         """Runs a single parallel wave of translation batches using persistent thread pool."""
         futures = {
@@ -549,9 +561,9 @@ class JSONTranslator:
 
     def _translate_batches(
         self,
-        items: List[Tuple[str, str]],
+        items: list[tuple[str, str]],
         summary: str,
-        translated_data: Dict[str, str],
+        translated_data: dict[str, str],
         progress_path: Path,
     ) -> None:
         """Executes batched translations in waves with intermediate autosaves."""
@@ -572,8 +584,8 @@ class JSONTranslator:
         self,
         input_file: Path,
         output_file: Path,
-        progress_file: Optional[Path] = None,
-        summary_file: Optional[Path] = None,
+        progress_file: Path | None = None,
+        summary_file: Path | None = None,
         auto_confirm: bool = False,
     ) -> bool:
         """Translates an entire JSON file in batches with progressive checkpointing."""
@@ -598,9 +610,7 @@ class JSONTranslator:
             self.save_progress(translated_data, progress_path)
 
         untranslated_items = [
-            (str(key), str(val))
-            for key, val in original_data.items()
-            if key not in translated_data
+            (str(key), str(val)) for key, val in original_data.items() if key not in translated_data
         ]
 
         if not untranslated_items:
@@ -619,8 +629,8 @@ class JSONTranslator:
 
 def process_translation(
     config_file: str = "config.json",
-    input_file: Optional[str] = None,
-    output_file: Optional[str] = None,
+    input_file: str | None = None,
+    output_file: str | None = None,
     auto_confirm: bool = False,
 ) -> Path:
     """Processes JSON translation and returns the output path."""
@@ -643,8 +653,8 @@ def process_translation(
 
 def translate_json(
     config_file: str = "config.json",
-    input_file: Optional[str] = None,
-    output_file: Optional[str] = None,
+    input_file: str | None = None,
+    output_file: str | None = None,
     auto_confirm: bool = False,
 ) -> bool:
     """Entrypoint function to run JSON translation pipeline."""

@@ -5,16 +5,14 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Any, Optional, Set, Union
-
-from json_repair import repair_json
+from typing import Any
 
 from .native_core import fast_count_symbols, fast_has_repeated_chars
 
 try:
     import orjson
 
-    def fast_json_loads(data: Union[str, bytes]) -> Any:
+    def fast_json_loads(data: str | bytes) -> Any:
         """Fast JSON deserializer using high-performance orjson."""
         return orjson.loads(data)
 
@@ -30,7 +28,7 @@ try:
 
 except ImportError:
 
-    def fast_json_loads(data: Union[str, bytes]) -> Any:
+    def fast_json_loads(data: str | bytes) -> Any:
         """Fallback JSON deserializer using standard library json."""
         return json.loads(data)
 
@@ -43,13 +41,13 @@ except ImportError:
         return json.dumps(obj, ensure_ascii=False, indent=2 if indent else None).encode("utf-8")
 
 
-def load_json_file(file_path: Union[str, Path]) -> Any:
+def load_json_file(file_path: str | Path) -> Any:
     """Fast binary JSON file loader."""
     with open(file_path, "rb") as file_handle:
         return fast_json_loads(file_handle.read())
 
 
-def dump_json_file(file_path: Union[str, Path], data: Any, indent: bool = True) -> None:
+def dump_json_file(file_path: str | Path, data: Any, indent: bool = True) -> None:
     """Fast binary JSON file dumper."""
     target = Path(file_path)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -170,6 +168,7 @@ _SENTENCE_PUNCT_RE = re.compile(r"[。！？…」♪〜]|\.\.\.")
 _CODE_CHARS = frozenset(r"/\\}{}=<>")
 
 JP_CHAR_PATTERN = re.compile(r"[\u3040-\u30ff\u4e00-\u9faf]")
+_RE_TRAILING_COMMA = re.compile(r",\s*([}\]])")
 
 
 def is_protected_sentence(text: str) -> bool:
@@ -203,7 +202,7 @@ def is_protected_katakana_word(text: str) -> bool:
     return bool(KATAKANA_WORD_PATTERN.match(s))
 
 
-def load_japanese_symbols(symbols_path: Optional[Union[Path, str]] = None) -> Set[str]:
+def load_japanese_symbols(symbols_path: Path | str | None = None) -> set[str]:
     """Loads Japanese symbols from a JSON file, falling back to default symbols."""
     if symbols_path is not None:
         target_path = Path(symbols_path)
@@ -217,7 +216,7 @@ def load_japanese_symbols(symbols_path: Optional[Union[Path, str]] = None) -> Se
     return set(DEFAULT_JP_SYMBOLS)
 
 
-def build_japanese_regex(symbols: Set[str]) -> re.Pattern:
+def build_japanese_regex(symbols: set[str]) -> re.Pattern:
     """Builds regex matching Japanese characters and custom symbols."""
     escaped_symbols = "".join(re.escape(s) for s in symbols)
     return re.compile(rf"[\u3040-\u30ff\u4e00-\u9faf{escaped_symbols}]")
@@ -245,9 +244,7 @@ def is_ascii_art_or_symbol_heavy(text: str, jp_regex: re.Pattern) -> bool:
         symbol_count = fast_count_symbols(text)
         if (symbol_count / n) > 0.5:
             return True
-    if fast_has_repeated_chars(text, min_repeat=5) and not jp_regex.search(text):
-        return True
-    return False
+    return bool(fast_has_repeated_chars(text, min_repeat=5) and not jp_regex.search(text))
 
 
 def clean_japanese_text(text: str) -> str:
@@ -267,17 +264,268 @@ def clean_japanese_text(text: str) -> str:
     return text
 
 
+def _strip_markdown_fences(text: str) -> str:
+    """Strips outer markdown code block fences (e.g. ```json ... ```)."""
+    if "```" not in text:
+        return text
+
+    f1 = text.find("```")
+    nl = text.find("\n", f1)
+    if nl != -1:
+        f2 = text.rfind("```")
+        return text[nl + 1 : f2].strip() if f2 > nl else text[nl + 1 :].strip()
+
+    f2 = text.rfind("```")
+    return text[f1 + 3 : f2].strip() if f2 > f1 + 3 else text[f1 + 3 :].strip()
+
+
+def _extract_container_slice(text: str) -> tuple[int, int]:
+    """Finds starting and ending indices of outermost JSON container."""
+    idx_brace = text.find("{")
+    idx_bracket = text.find("[")
+
+    if idx_brace == -1:
+        start = idx_bracket
+    elif idx_bracket == -1:
+        start = idx_brace
+    else:
+        start = min(idx_brace, idx_bracket)
+
+    if start == -1:
+        return -1, -1
+
+    last_brace = text.rfind("}")
+    last_bracket = text.rfind("]")
+    end = max(last_brace, last_bracket)
+    return start, end
+
+
+# pylint: disable=too-many-instance-attributes,too-few-public-methods
+class _JsonRepairMachine:
+    """High-speed state-machine token reconstructor for malformed LLM JSON."""
+
+    __slots__ = (
+        "escaped",
+        "i",
+        "in_string",
+        "is_key",
+        "last_comma_idx",
+        "last_non_ws",
+        "n",
+        "out",
+        "quote_char",
+        "s",
+        "stack",
+    )
+
+    def __init__(self, s: str) -> None:
+        self.s = s
+        self.n = len(s)
+        self.i = 0
+        self.out: list[str] = []
+        self.stack: list[str] = []
+        self.in_string = False
+        self.quote_char = '"'
+        self.escaped = False
+        self.last_non_ws = ""
+        self.last_comma_idx = -1
+        self.is_key = False
+
+    def repair(self) -> str:
+        """Executes single-pass state-machine repair sweep."""
+        while self.i < self.n:
+            ch = self.s[self.i]
+            if self.in_string:
+                self._handle_string_char(ch)
+            else:
+                self._handle_structural_char(ch)
+        return self._finalize()
+
+    def _handle_string_char(self, ch: str) -> None:
+        if self.escaped:
+            self.out.append(ch)
+            self.escaped = False
+            self.i += 1
+            return
+
+        if ch == "\\":
+            self.out.append(ch)
+            self.escaped = True
+            self.i += 1
+            return
+
+        if ch == self.quote_char:
+            j = self.i + 1
+            while j < self.n and self.s[j] in (" ", "\t", "\r", "\n"):
+                j += 1
+            if j == self.n or self.s[j] in (",", "}", "]", ":"):
+                self.out.append('"')
+                self.in_string = False
+                self.last_non_ws = '"'
+            else:
+                self.out.append('\\"')
+            self.i += 1
+            return
+
+        if ch == "\n":
+            self.out.append("\\n")
+        elif ch == "\r":
+            if self.i + 1 >= self.n or self.s[self.i + 1] != "\n":
+                self.out.append("\\r")
+        elif ch == "\t":
+            self.out.append("\\t")
+        elif ord(ch) < 0x20:
+            self.out.append(f"\\u{ord(ch):04x}")
+        else:
+            self.out.append(ch)
+        self.i += 1
+
+    def _handle_structural_char(self, ch: str) -> None:
+        if ch in (" ", "\t", "\r", "\n"):
+            self.out.append(ch)
+            self.i += 1
+        elif ch == "/" and self.i + 1 < self.n:
+            if self.s[self.i + 1] == "/":
+                nl = self.s.find("\n", self.i + 2)
+                self.i = self.n if nl == -1 else nl
+            elif self.s[self.i + 1] == "*":
+                end_c = self.s.find("*/", self.i + 2)
+                self.i = self.n if end_c == -1 else end_c + 2
+        elif ch in ('"', "'"):
+            self.in_string = True
+            self.quote_char = ch
+            self.out.append('"')
+            self.is_key = bool(
+                self.stack and self.stack[-1] == "}" and self.last_non_ws in ("{", ",")
+            )
+            self.last_non_ws = '"'
+            self.last_comma_idx = -1
+            self.i += 1
+        elif ch == "{":
+            self.stack.append("}")
+            self.out.append("{")
+            self.last_non_ws = "{"
+            self.last_comma_idx = -1
+            self.i += 1
+        elif ch == "[":
+            self.stack.append("]")
+            self.out.append("[")
+            self.last_non_ws = "["
+            self.last_comma_idx = -1
+            self.i += 1
+        elif ch in ("}", "]"):
+            self._close_delimiter(ch)
+            self.i += 1
+        elif ch == ",":
+            if self.last_non_ws not in ("{", "[", ",", ":"):
+                self.last_comma_idx = len(self.out)
+                self.out.append(",")
+                self.last_non_ws = ","
+            self.i += 1
+        elif ch == ":":
+            self.out.append(":")
+            self.last_non_ws = ":"
+            self.last_comma_idx = -1
+            self.i += 1
+        else:
+            self._handle_literals_and_chars(ch)
+
+    def _close_delimiter(self, closing: str) -> None:
+        if self.last_comma_idx != -1:
+            self.out[self.last_comma_idx] = ""
+            self.last_comma_idx = -1
+        if self.last_non_ws == ":":
+            self.out.append('""')
+
+        if self.stack:
+            if self.stack[-1] == closing:
+                self.stack.pop()
+                self.out.append(closing)
+            elif closing in self.stack:
+                while self.stack and self.stack[-1] != closing:
+                    self.out.append(self.stack.pop())
+                if self.stack and self.stack[-1] == closing:
+                    self.stack.pop()
+                    self.out.append(closing)
+            else:
+                other = "]" if closing == "}" else "}"
+                self.out.append(other)
+                self.stack.pop()
+
+        self.last_non_ws = closing
+
+    def _handle_literals_and_chars(self, ch: str) -> None:
+        if self.s.startswith("True", self.i):
+            self.out.append("true")
+            self.i += 4
+            self.last_non_ws = "e"
+        elif self.s.startswith("False", self.i):
+            self.out.append("false")
+            self.i += 5
+            self.last_non_ws = "e"
+        elif self.s.startswith("None", self.i):
+            self.out.append("null")
+            self.i += 4
+            self.last_non_ws = "l"
+        else:
+            self.out.append(ch)
+            self.last_non_ws = ch
+            self.i += 1
+        self.last_comma_idx = -1
+
+    def _finalize(self) -> str:
+        if self.in_string:
+            if self.escaped:
+                self.out.append("\\")
+            self.out.append('"')
+            self.last_non_ws = '"'
+            if self.is_key:
+                self.out.append(': ""')
+
+        if self.last_comma_idx != -1:
+            self.out[self.last_comma_idx] = ""
+
+        if self.last_non_ws == ":":
+            self.out.append('""')
+
+        while self.stack:
+            self.out.append(self.stack.pop())
+
+        return "".join(self.out)
+
+
+def repair_json_string(raw: str) -> str:
+    """Repairs and extracts valid JSON from malformed or conversational LLM output."""
+    if not raw or not raw.strip():
+        return ""
+
+    s = _strip_markdown_fences(raw.strip())
+    start_idx, end_idx = _extract_container_slice(s)
+    if start_idx == -1:
+        return ""
+
+    if end_idx > start_idx:
+        candidate = s[start_idx : end_idx + 1]
+        try:
+            fast_json_loads(candidate)
+            return candidate
+        except (ValueError, TypeError, json.JSONDecodeError):
+            cand_no_comma = _RE_TRAILING_COMMA.sub(r"\1", candidate)
+            try:
+                fast_json_loads(cand_no_comma)
+                return cand_no_comma
+            except (ValueError, TypeError, json.JSONDecodeError):
+                pass
+
+    return _JsonRepairMachine(s[start_idx:]).repair()
+
+
 def parse_llm_json_response(response_text: str) -> dict:
-    """Parses raw text from LLM into a dictionary using fast path with json_repair fallback."""
+    """Parses raw text from LLM into a dictionary using fast path with in-house repair."""
     if not response_text or not response_text.strip():
         raise ValueError("Response text is empty or whitespace.")
 
-    raw = response_text.strip()
-    if raw.startswith("```"):
-        first_nl = raw.find("\n")
-        last_fence = raw.rfind("```")
-        if first_nl != -1 and last_fence > first_nl:
-            raw = raw[first_nl + 1 : last_fence].strip()
+    raw = _strip_markdown_fences(response_text.strip())
 
     try:
         parsed = fast_json_loads(raw)
@@ -287,7 +535,7 @@ def parse_llm_json_response(response_text: str) -> dict:
         pass
 
     try:
-        repaired_json_str = repair_json(raw)
+        repaired_json_str = repair_json_string(raw)
         parsed = fast_json_loads(repaired_json_str)
         if isinstance(parsed, dict):
             return parsed
@@ -298,11 +546,11 @@ def parse_llm_json_response(response_text: str) -> dict:
 
 
 def parse_json_array_safely(content: str) -> list:
-    """Parses JSON array and repairs truncated strings."""
+    """Parses JSON array and repairs truncated strings using in-house high-speed repair."""
     if not content:
         return []
 
-    s = content.strip()
+    s = _strip_markdown_fences(content.strip())
     start_idx = s.find("[")
     if start_idx != -1:
         end_idx = s.rfind("]")
@@ -325,7 +573,7 @@ def parse_json_array_safely(content: str) -> list:
                 pass
 
     try:
-        repaired = repair_json(s)
+        repaired = repair_json_string(s)
         res = fast_json_loads(repaired)
         if isinstance(res, list):
             return res

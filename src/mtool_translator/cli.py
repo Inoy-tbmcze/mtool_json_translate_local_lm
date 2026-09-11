@@ -2,7 +2,6 @@
 
 import argparse
 import sys
-from typing import Optional
 
 from .cleaner import process_json_file
 from .translator import process_translation
@@ -10,7 +9,9 @@ from .validator import process_validation
 
 
 def run_pipeline(
-    config_file: str = "config.json", input_file: Optional[str] = None, auto_confirm: bool = False
+    config_file: str = "config.json",
+    input_file: str | None = None,
+    auto_confirm: bool = False,
 ):
     """Executes the full Stage 1 -> Stage 2 -> Stage 3 pipeline."""
     print("=" * 60)
@@ -70,7 +71,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     # Validate sub-command
     val_p = subparsers.add_parser(
-        "validate", help="Stage 3: Validate translations and isolate lines for retranslation"
+        "validate",
+        help="Stage 3: Validate translations and isolate lines for retranslation",
     )
     val_p.add_argument("-i", "--input", help="Path to input JSON file", default=None)
     val_p.add_argument("-c", "--config", help="Path to config.json", default="config.json")

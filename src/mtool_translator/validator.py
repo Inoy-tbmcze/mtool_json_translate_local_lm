@@ -12,13 +12,17 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
-
-from json_repair import repair_json
+from typing import Any
 
 from .config import load_config, resolve_input_path, resolve_output_path
 from .http_client import FastLocalHttpClient, HttpRequestError, default_client
-from .utils import dump_json_file, fast_json_dumps_bytes, fast_json_loads, load_json_file
+from .utils import (
+    dump_json_file,
+    fast_json_dumps_bytes,
+    fast_json_loads,
+    load_json_file,
+    repair_json_string,
+)
 
 
 @dataclass
@@ -35,22 +39,22 @@ class ValidationPaths:
 class ValidationState:
     """Encapsulates validation dictionaries and tracked keys."""
 
-    validated_data: Dict[str, Any]
-    retranslate_data: Dict[str, Any]
-    processed_keys: Set[str]
+    validated_data: dict[str, Any]
+    retranslate_data: dict[str, Any]
+    processed_keys: set[str]
 
 
 @dataclass
 class ValidationWaveContext:
     """Bundles shared context parameters for validation wave execution."""
 
-    config: Dict[str, Any]
+    config: dict[str, Any]
     session: FastLocalHttpClient
     lock: threading.RLock
     state: ValidationState
 
 
-def _parse_validation_json(content: str) -> Dict[str, Any]:
+def _parse_validation_json(content: str) -> dict[str, Any]:
     """Extracts and parses JSON object from LLM response content."""
     if not content:
         return {}
@@ -68,10 +72,11 @@ def _parse_validation_json(content: str) -> Dict[str, Any]:
                 pass
 
     try:
-        repaired = repair_json(s)
-        res = fast_json_loads(repaired)
-        if isinstance(res, dict):
-            return res
+        repaired = repair_json_string(s)
+        if repaired:
+            res = fast_json_loads(repaired)
+            if isinstance(res, dict):
+                return res
     except (ValueError, TypeError, json.JSONDecodeError):
         pass
 
@@ -79,8 +84,8 @@ def _parse_validation_json(content: str) -> Dict[str, Any]:
 
 
 def _send_validation_request(
-    prompt: str, config: Dict[str, Any], session: Optional[FastLocalHttpClient] = None
-) -> Dict[str, Any]:
+    prompt: str, config: dict[str, Any], session: FastLocalHttpClient | None = None
+) -> dict[str, Any]:
     """Sends validation payload to LLM and returns parsed mapping."""
     req_data = {
         "model": config["model"],
@@ -105,10 +110,10 @@ def _send_validation_request(
 
 
 def call_batch_validation(
-    batch: List[Tuple[int, str, str]],
-    config: Dict[str, Any],
-    session: Optional[FastLocalHttpClient] = None,
-) -> Dict[str, bool]:
+    batch: list[tuple[int, str, str]],
+    config: dict[str, Any],
+    session: FastLocalHttpClient | None = None,
+) -> dict[str, bool]:
     """Sends batch of (ID, JP_source, EN_target) to LLM for translation validation."""
     items_str = "\n".join(f"{idx} | JP: {jp} | EN: {en}" for idx, jp, en in batch)
     prompt = (
@@ -137,7 +142,7 @@ def call_batch_validation(
 
 
 def save_progress(
-    paths: ValidationPaths, state: ValidationState, lock: Optional[threading.RLock] = None
+    paths: ValidationPaths, state: ValidationState, lock: threading.RLock | None = None
 ) -> None:
     """Safely writes validation results (*_validated.json, *_retranslate.json) and checkpoints."""
 
@@ -145,7 +150,9 @@ def save_progress(
         dump_json_file(paths.valid, state.validated_data, indent=True)
         dump_json_file(paths.retranslate, state.retranslate_data, indent=True)
         dump_json_file(
-            paths.checkpoint, {"processed_keys": list(state.processed_keys)}, indent=True
+            paths.checkpoint,
+            {"processed_keys": list(state.processed_keys)},
+            indent=True,
         )
         print(" -> Autosave successful.")
 
@@ -160,7 +167,7 @@ def save_progress(
 
 
 def _init_validation_paths(
-    config: Dict[str, Any], input_file: Optional[str], output_dir: Optional[str]
+    config: dict[str, Any], input_file: str | None, output_dir: str | None
 ) -> ValidationPaths:
     """Resolves input, output, and checkpoint paths for translation validation."""
     input_filename = input_file or config.get("input_filename", "translated_game_text.json")
@@ -193,9 +200,9 @@ def _init_validation_paths(
 
 def _load_validation_state(paths: ValidationPaths) -> ValidationState:
     """Loads existing validated data, retranslation data, and checkpoint keys."""
-    validated_data: Dict[str, Any] = {}
-    retranslate_data: Dict[str, Any] = {}
-    processed_keys: Set[str] = set()
+    validated_data: dict[str, Any] = {}
+    retranslate_data: dict[str, Any] = {}
+    processed_keys: set[str] = set()
 
     if paths.checkpoint.exists():
         try:
@@ -224,7 +231,7 @@ def _load_validation_state(paths: ValidationPaths) -> ValidationState:
 
 def _process_validation_wave_with_executor(
     executor: ThreadPoolExecutor,
-    current_wave: List[List[Tuple[int, str, str]]],
+    current_wave: list[list[tuple[int, str, str]]],
     ctx: ValidationWaveContext,
 ) -> None:
     """Processes a single parallel wave of validation batches using persistent thread pool."""
@@ -245,8 +252,8 @@ def _process_validation_wave_with_executor(
 
 
 def _run_validation_waves(
-    batches: List[List[Tuple[int, str, str]]],
-    config: Dict[str, Any],
+    batches: list[list[tuple[int, str, str]]],
+    config: dict[str, Any],
     paths: ValidationPaths,
     state: ValidationState,
     lock: threading.RLock,
@@ -271,9 +278,9 @@ def _run_validation_waves(
 
 def process_validation(
     config_file: str = "config.json",
-    input_file: Optional[str] = None,
-    output_dir: Optional[str] = None,
-) -> Tuple[Path, Path]:
+    input_file: str | None = None,
+    output_dir: str | None = None,
+) -> tuple[Path, Path]:
     """Audits translated JSON file, splitting passed items and items needing retranslation."""
     config = load_config(config_file, section="validation")
     paths = _init_validation_paths(config, input_file, output_dir)

@@ -4,10 +4,11 @@
 Translate Japanese game localization text (MTool, RPG Maker, Unity JSON dumps) into English using local LLMs (LM Studio / OpenAI-compatible API). The system preserves JSON dictionary structures, game context, character voices, and UI markers across three modular stages: **Cleanup**, **Translation**, and **Validation**.
 
 Performance-critical paths incorporate low-level acceleration:
-- JIT-allocated x86-64 machine code kernels via Win32 `VirtualAlloc` (`is_ascii_ident`, `has_repeated_bytes`, `count_symbols`).
+- JIT-allocated x86-64 machine code kernels via Win32 `VirtualAlloc` (`is_ascii_ident`, `has_repeated_bytes`, `count_symbols`, `find_json_bounds`).
 - Unicode BMP 8,192-byte bitmask lookup table for character set checks.
 - Fast-rejection zero-copy string algorithms for text cleanup.
 - SIMD JSON serialization via `orjson`.
+- Resilient in-house JSON repair engine (`repair_json_string`) replacing third-party `json_repair`.
 - In-house persistent HTTP/1.1 client (`FastLocalHttpClient`) utilizing standard library `http.client`, Windows `SIO_LOOPBACK_FAST_PATH`, `TCP_NODELAY`, and LIFO connection pooling, completely eliminating `requests` and its transitive dependencies.
 
 ---
@@ -34,11 +35,11 @@ mtool_json_translate_local_lm/
 │       ├── cli.py                # Unified CLI entrypoint
 │       ├── config.py             # Configuration & path resolution
 │       ├── cleaner.py            # Stage 1: Heuristic & LLM text cleaner
-│       ├── http_client.py        # Ultra-fast in-house persistent HTTP/1.1 client
+│       ├── http_client.py        # Fast in-house persistent HTTP/1.1 client
 │       ├── native_core.py        # JIT x86-64 machine code & bitmask acceleration
 │       ├── translator.py         # Stage 2: Token-aware chunker & translation engine
 │       ├── validator.py          # Stage 3: Translation validation auditor
-│       └── utils.py              # Shared Japanese regex, orjson & parsing helpers
+│       └── utils.py              # Shared Japanese regex, in-house JSON repair & parsing helpers
 ├── clean_game_text.py            # Backward-compatible Stage 1 script wrapper
 ├── main.py                       # Unified CLI and Stage 2 script wrapper
 ├── validate_translation.py       # Backward-compatible Stage 3 script wrapper
@@ -82,7 +83,7 @@ mtool_json_translate_local_lm/
   # Or activate venv in PowerShell:
   C:\Users\inoy\PycharmProjects\mtool_translate\.venv\Scripts\Activate.ps1
   ```
-  *Important:* Always invoke Python using the virtual environment interpreter above. System Python lacks required dependencies (`json_repair`, `orjson`).
+  *Important:* Always invoke Python using the virtual environment interpreter above. System Python lacks required dependencies (`orjson`).
 
 - **Local LLM Server (LM Studio):**
   - Default endpoint: `http://127.0.0.1:1234/v1/chat/completions`
@@ -216,7 +217,7 @@ Tool requirements:
 2. **Windows PowerShell Commands Only:** Always use Windows PowerShell commands. Never use Linux or Bash commands (`ls`, `rm`, `cat`, `grep`).
 3. **Virtualenv Interpreter:** Always run Python scripts using `C:\Users\inoy\PycharmProjects\mtool_translate\.venv\Scripts\python.exe`.
 4. **Encoding & Serialization:** All JSON inputs/outputs must use UTF-8 encoding via `fast_json_dumps_bytes` or `fast_json_loads` (`orjson` accelerated).
-5. **JSON Output Resilience:** Always utilize `json_repair.repair_json` to safely deserialize model responses that contain markdown fences, commentary, or unescaped quotes.
+5. **JSON Output Resilience:** Always utilize in-house `repair_json_string` to safely deserialize model responses that contain markdown fences, commentary, truncated tokens, or unescaped quotes.
 6. **Autosave & Checkpoints:** Preserve checkpoint logic (`checkpoint.json`, `translation_progress.json`, autosaves) to guarantee that interruptions can resume without data loss.
 7. **Skills Adherence:** Refer to the corresponding `.agents/skills/<skill>/SKILL.md` before executing or modifying pipeline steps.
 8. **Static Code Analysis:** Always verify changes with `.\Make.ps1 sca` and ensure Pylint stays at 10.00/10.
