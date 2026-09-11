@@ -18,10 +18,10 @@ Install required dependencies:
 pip install -r requirements.txt
 ```
 
-Optional editable install for the `mtool-translate` command:
+Optional editable install for the `mtool-translate` CLI and development tools (SCA/linters):
 
 ```powershell
-pip install -e .
+pip install -e ".[dev]"
 ```
 
 ## Quick start
