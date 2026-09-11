@@ -589,11 +589,13 @@ class JSONTranslator:
         auto_confirm: bool = False,
     ) -> bool:
         """Translates an entire JSON file in batches with progressive checkpointing."""
+        progress_name = self.config.get("progress_filename", "translation_progress.json")
         progress_path = progress_file or resolve_output_path(
-            "translation_progress.json", default_subfolder="processed"
+            progress_name, default_subfolder="processed"
         )
+        summary_name = self.config.get("summary_filename", "summary.txt")
         summary_path = summary_file or resolve_output_path(
-            "summary.txt", default_subfolder="processed"
+            summary_name, default_subfolder="processed"
         )
 
         original_data = load_json_file(input_file)
@@ -627,11 +629,13 @@ class JSONTranslator:
         return True
 
 
-def process_translation(
+def process_translation(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     config_file: str = "config.json",
     input_file: str | None = None,
     output_file: str | None = None,
     auto_confirm: bool = False,
+    progress_file: Path | None = None,
+    summary_file: Path | None = None,
 ) -> Path:
     """Processes JSON translation and returns the output path."""
     config = load_config(config_file, section="translation")
@@ -646,7 +650,11 @@ def process_translation(
 
     with JSONTranslator(config_file=config_file) as translator:
         translator.translate_json_file(
-            input_file=in_file, output_file=out_file, auto_confirm=auto_confirm
+            input_file=in_file,
+            output_file=out_file,
+            progress_file=progress_file,
+            summary_file=summary_file,
+            auto_confirm=auto_confirm,
         )
     return out_file
 

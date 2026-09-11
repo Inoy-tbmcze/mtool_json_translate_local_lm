@@ -2,6 +2,7 @@
 
 import argparse
 import sys
+from pathlib import Path
 
 from .cleaner import process_json_file
 from .translator import process_translation
@@ -11,8 +12,9 @@ from .validator import process_validation
 def run_pipeline(
     config_file: str = "config.json",
     input_file: str | None = None,
+    output_dir: str | None = None,
     auto_confirm: bool = False,
-):
+) -> tuple[Path, Path]:
     """Executes the full Stage 1 -> Stage 2 -> Stage 3 pipeline."""
     print("=" * 60)
     print("Starting Localization Pipeline: Clean -> Translate -> Validate")
@@ -20,18 +22,34 @@ def run_pipeline(
 
     # 1. Clean
     print("\n[Step 1/3] Preprocessing and Cleaning...")
-    cleaned_path, _ = process_json_file(config_file=config_file, input_file=input_file)
+    cleaned_path, _ = process_json_file(
+        config_file=config_file, input_file=input_file, output_dir=output_dir
+    )
 
     # 2. Translate
     print("\n[Step 2/3] Translating cleaned text...")
+    out_trans = None
+    progress_file = None
+    summary_file = None
+    if output_dir:
+        stem = cleaned_path.stem.replace("_cleaned", "")
+        out_trans = Path(output_dir) / f"{stem}_translated.json"
+        progress_file = Path(output_dir) / f"{stem}_progress.json"
+        summary_file = Path(output_dir) / f"{stem}_summary.txt"
+
     translated_path = process_translation(
-        config_file=config_file, input_file=str(cleaned_path), auto_confirm=auto_confirm
+        config_file=config_file,
+        input_file=str(cleaned_path),
+        output_file=str(out_trans) if out_trans else None,
+        auto_confirm=auto_confirm,
+        progress_file=progress_file,
+        summary_file=summary_file,
     )
 
     # 3. Validate
     print("\n[Step 3/3] Auditing translation quality...")
     validated_path, retranslate_path = process_validation(
-        config_file=config_file, input_file=str(translated_path)
+        config_file=config_file, input_file=str(translated_path), output_dir=output_dir
     )
 
     print("\n" + "=" * 60)
@@ -39,6 +57,8 @@ def run_pipeline(
     print(f"Passed Translations:  {validated_path}")
     print(f"Retranslate File:     {retranslate_path}")
     print("=" * 60)
+
+    return validated_path, retranslate_path
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -83,6 +103,7 @@ def build_parser() -> argparse.ArgumentParser:
         "pipeline", help="Run full pipeline: Clean -> Translate -> Validate"
     )
     pipe_p.add_argument("-i", "--input", help="Path to initial raw input JSON file", default=None)
+    pipe_p.add_argument("-o", "--output-dir", help="Target output directory", default=None)
     pipe_p.add_argument("-c", "--config", help="Path to config.json", default="config.json")
     pipe_p.add_argument("-y", "--yes", action="store_true", help="Auto-confirm prompts")
 
@@ -118,7 +139,12 @@ def main():
             config_file=args.config, input_file=args.input, output_dir=args.output_dir
         )
     elif args.command == "pipeline":
-        run_pipeline(config_file=args.config, input_file=args.input, auto_confirm=args.yes)
+        run_pipeline(
+            config_file=args.config,
+            input_file=args.input,
+            output_dir=args.output_dir,
+            auto_confirm=args.yes,
+        )
     else:
         parser.print_help()
 

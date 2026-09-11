@@ -40,6 +40,10 @@ mtool_json_translate_local_lm/
 │       ├── translator.py         # Stage 2: Token-aware chunker & translation engine
 │       ├── validator.py          # Stage 3: Translation validation auditor
 │       └── utils.py              # Shared Japanese regex, in-house JSON repair & parsing helpers
+├── tests/
+│   ├── test_http_client.py       # FastLocalHttpClient unit & integration tests
+│   ├── test_json_repair.py       # Native bounds & repair engine test suite
+│   └── test_pipeline_harness.py  # Automated AI test & performance monitoring harness
 ├── clean_game_text.py            # Backward-compatible Stage 1 script wrapper
 ├── main.py                       # Unified CLI and Stage 2 script wrapper
 ├── validate_translation.py       # Backward-compatible Stage 3 script wrapper
@@ -150,6 +154,45 @@ Run any stage or the full pipeline via `main.py`:
 
 ---
 
+## Automated Test & Performance Monitoring Harness (Agent Self-Testing)
+
+Use [tests/test_pipeline_harness.py](file:///E:/ai/projects/mtool_json_translate_local_lm/tests/test_pipeline_harness.py) to test individual stages or the full pipeline, monitor performance metrics (throughput, latency, peak memory), and verify data fidelity.
+
+### Priority Rule for Execution Requests
+**When the user requests pipeline or step execution, ALWAYS prioritize running `tests/test_pipeline_harness.py` first (or as the execution vehicle) to benchmark performance, assert key conservation, and verify absence of errors.**
+
+### Execution Commands
+
+```powershell
+# 1. Full pipeline + all steps benchmark (Mock mode - hermetic, zero dependencies)
+& "C:\Users\inoy\PycharmProjects\mtool_translate\.venv\Scripts\python.exe" tests/test_pipeline_harness.py
+
+# 2. Machine-readable JSON output (clean stdout for automated agent inspection)
+& "C:\Users\inoy\PycharmProjects\mtool_translate\.venv\Scripts\python.exe" tests/test_pipeline_harness.py --json
+
+# 3. Target a single step (clean | translate | validate | pipeline)
+& "C:\Users\inoy\PycharmProjects\mtool_translate\.venv\Scripts\python.exe" tests/test_pipeline_harness.py --step clean
+& "C:\Users\inoy\PycharmProjects\mtool_translate\.venv\Scripts\python.exe" tests/test_pipeline_harness.py --step translate
+& "C:\Users\inoy\PycharmProjects\mtool_translate\.venv\Scripts\python.exe" tests/test_pipeline_harness.py --step validate
+& "C:\Users\inoy\PycharmProjects\mtool_translate\.venv\Scripts\python.exe" tests/test_pipeline_harness.py --step pipeline
+
+# 4. Benchmark against live LM Studio instance
+& "C:\Users\inoy\PycharmProjects\mtool_translate\.venv\Scripts\python.exe" tests/test_pipeline_harness.py --live
+
+# 5. Run with custom synthetic dataset size and save report to disk
+& "C:\Users\inoy\PycharmProjects\mtool_translate\.venv\Scripts\python.exe" tests/test_pipeline_harness.py --num-items 100 --report-file data/processed/harness_report.json
+```
+
+### Metrics Tracked
+- `duration_ms`: Step run duration in milliseconds.
+- `items_in` / `items_out`: Item count fidelity and key conservation (`cleaned + quarantine == raw`).
+- `items_per_sec`: Processing throughput in items per second.
+- `chars_processed` / `chars_per_sec`: Character volume and character throughput.
+- `peak_memory_kb`: Peak memory footprint measured via `tracemalloc`.
+- `status`: `"PASSED"` or `"FAILED"` with structured `error_message` on failure.
+
+---
+
 ## Static Code Analysis & Quality Standards
 
 Every modification must pass all static analysis checks cleanly:
@@ -214,10 +257,11 @@ Tool requirements:
 
 ## Agent Operational Rules & Guidelines
 1. **Always-On Unslop Skill:** Follow [.agents/skills/unslop/SKILL.md](file:///E:/ai/projects/mtool_json_translate_local_lm/.agents/skills/unslop/SKILL.md) unconditionally: eliminate filler, sycophancy, AI buzzwords (delve, tapestry, pivotal, crucial, enhance), superficial -ing clauses, em dashes, and decorative emojis. Speak and write plainly and directly.
-2. **Windows PowerShell Commands Only:** Always use Windows PowerShell commands. Never use Linux or Bash commands (`ls`, `rm`, `cat`, `grep`).
-3. **Virtualenv Interpreter:** Always run Python scripts using `C:\Users\inoy\PycharmProjects\mtool_translate\.venv\Scripts\python.exe`.
-4. **Encoding & Serialization:** All JSON inputs/outputs must use UTF-8 encoding via `fast_json_dumps_bytes` or `fast_json_loads` (`orjson` accelerated).
-5. **JSON Output Resilience:** Always utilize in-house `repair_json_string` to safely deserialize model responses that contain markdown fences, commentary, truncated tokens, or unescaped quotes.
-6. **Autosave & Checkpoints:** Preserve checkpoint logic (`checkpoint.json`, `translation_progress.json`, autosaves) to guarantee that interruptions can resume without data loss.
-7. **Skills Adherence:** Refer to the corresponding `.agents/skills/<skill>/SKILL.md` before executing or modifying pipeline steps.
-8. **Static Code Analysis:** Always verify changes with `.\Make.ps1 sca` and ensure Pylint stays at 10.00/10.
+2. **Prioritize Harness on Execution Requests:** When asked to execute, test, benchmark, or verify any pipeline step or the full pipeline, prioritize running `tests/test_pipeline_harness.py`. Use `--json` to inspect structured metrics, verify key conservation, monitor latency/throughput/memory, and ensure zero regressions.
+3. **Windows PowerShell Commands Only:** Always use Windows PowerShell commands. Never use Linux or Bash commands (`ls`, `rm`, `cat`, `grep`).
+4. **Virtualenv Interpreter:** Always run Python scripts using `C:\Users\inoy\PycharmProjects\mtool_translate\.venv\Scripts\python.exe`.
+5. **Encoding & Serialization:** All JSON inputs/outputs must use UTF-8 encoding via `fast_json_dumps_bytes` or `fast_json_loads` (`orjson` accelerated).
+6. **JSON Output Resilience:** Always utilize in-house `repair_json_string` to safely deserialize model responses that contain markdown fences, commentary, truncated tokens, or unescaped quotes.
+7. **Autosave & Checkpoints:** Preserve checkpoint logic (`checkpoint.json`, `translation_progress.json`, autosaves) to guarantee that interruptions can resume without data loss.
+8. **Skills Adherence:** Refer to the corresponding `.agents/skills/<skill>/SKILL.md` before executing or modifying pipeline steps.
+9. **Static Code Analysis:** Always verify changes with `.\Make.ps1 sca` and ensure Pylint stays at 10.00/10.
