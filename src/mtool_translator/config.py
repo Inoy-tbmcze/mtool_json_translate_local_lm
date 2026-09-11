@@ -2,11 +2,27 @@
 
 from __future__ import annotations
 
-import json
+import functools
 from pathlib import Path
 from typing import Any, Union
 
+try:
+    import orjson
 
+    def _read_json_file(path: Path) -> dict[str, Any]:
+        with open(path, "rb") as f:
+            data = orjson.loads(f.read())
+            return data if isinstance(data, dict) else {}
+except ImportError:
+    import json
+
+    def _read_json_file(path: Path) -> dict[str, Any]:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            return data if isinstance(data, dict) else {}
+
+
+@functools.lru_cache(maxsize=1)
 def get_project_root() -> Path:
     """Finds the project root directory based on landmark files."""
     current = Path(__file__).resolve().parent
@@ -39,14 +55,14 @@ def resolve_input_path(filename: Union[str, Path], default_subfolder: str = "raw
         return cwd_path.resolve()
 
     root = get_project_root()
-    search_paths = [
+    search_paths = (
         root / "data" / default_subfolder / path.name,
         root / "data" / "reference" / path.name,
         root / "data" / "dictionaries" / path.name,
         root / "data" / "raw" / path.name,
         root / "data" / "processed" / path.name,
         root / path.name,
-    ]
+    )
 
     for candidate in search_paths:
         if candidate.exists():
@@ -85,9 +101,8 @@ def load_config(
     raw_config: dict[str, Any] = {}
     if config_path.exists():
         try:
-            with open(config_path, "r", encoding="utf-8") as f:
-                raw_config = json.load(f)
-        except (json.JSONDecodeError, OSError) as err:
+            raw_config = _read_json_file(config_path)
+        except Exception as err:
             print(f"Warning: Failed to read '{config_path.name}' ({err}). Using defaults.")
     else:
         print(f"Notice: Config file '{config_file}' not found. Using defaults.")
@@ -96,14 +111,15 @@ def load_config(
 
     if section:
         section_aliases = {
-            "cleanup": ["cleanup", "clean"],
-            "translation": ["translation", "translate"],
-            "validation": ["validation", "validate"],
+            "cleanup": ("cleanup", "clean"),
+            "translation": ("translation", "translate"),
+            "validation": ("validation", "validate"),
         }
         matched_section = None
-        for key in section_aliases.get(section, [section]):
-            if key in raw_config and isinstance(raw_config[key], dict):
-                matched_section = raw_config[key]
+        for key in section_aliases.get(section, (section,)):
+            val = raw_config.get(key)
+            if isinstance(val, dict):
+                matched_section = val
                 break
 
         pipeline_keys = ("cleanup", "translation", "translate", "validation", "validate")

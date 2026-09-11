@@ -7,7 +7,6 @@ Includes token-aware chunking, translation blueprint generation, and checkpoint 
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 import time
@@ -19,12 +18,31 @@ from typing import Any, Dict, List, Optional, Tuple
 import requests
 
 from .config import load_config, resolve_input_path, resolve_output_path
-from .utils import clean_japanese_text, parse_llm_json_response
+from .utils import (
+    clean_japanese_text,
+    dump_json_file,
+    fast_json_dumps,
+    fast_json_dumps_bytes,
+    load_json_file,
+    parse_llm_json_response,
+)
 
 logger = logging.getLogger("mtool_translator.translator")
 
 SUMMARY_BATCH_SIZE = 1000
 WORKER_COUNT = 2
+
+JP_SOURCE_REGEX = re.compile(r"[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]")
+
+ERROR_PATTERNS = (
+    "translation failed",
+    "unable to translate",
+    "error occurred",
+    "something went wrong",
+    "as an ai",
+    "i cannot translate",
+    "translator note:",
+)
 
 
 class TokenAwareChunker:
@@ -55,7 +73,7 @@ class TokenAwareChunker:
         """Estimates or counts tokens for a string."""
         if self.tokenizer:
             return len(self.tokenizer.encode(text, add_special_tokens=False))
-        return int(len(text) / 3.0)
+        return len(text) // 3
 
     def create_chunks(self, lst: List[str]) -> List[List[str]]:
         """Groups list items into chunks that do not exceed max_chunk_tokens."""
@@ -74,9 +92,7 @@ class TokenAwareChunker:
 
                 sub_items = item.split("\n")
                 if len(sub_items) > 1:
-                    sub_chunks = self.create_chunks(sub_items)
-                    for sc in sub_chunks:
-                        chunks.append(sc)
+                    chunks.extend(self.create_chunks(sub_items))
                 else:
                     chunks.append([item])
                 continue
@@ -128,6 +144,23 @@ class JSONTranslator:
         self.logger = logger
         self.print_summary = True
 
+        self.session = requests.Session()
+        adapter = requests.adapters.HTTPAdapter(
+            pool_connections=WORKER_COUNT, pool_maxsize=WORKER_COUNT
+        )
+        self.session.mount("http://", adapter)
+        self.session.mount("https://", adapter)
+
+    def close(self) -> None:
+        """Closes the underlying HTTP session."""
+        self.session.close()
+
+    def __enter__(self) -> "JSONTranslator":
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        self.close()
+
     def _init_config(self, config_file: str) -> Dict[str, Any]:
         config = load_config(config_file, section="translation")
 
@@ -177,20 +210,19 @@ class JSONTranslator:
             return {}
 
         try:
-            with open(dict_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                if isinstance(data, dict):
-                    self.logger.info(
-                        "Loaded %d common translations from '%s'.",
-                        len(data),
-                        dict_path.name,
-                    )
-                    return {str(k): str(v) for k, v in data.items()}
-                self.logger.warning(
-                    "Common translations file '%s' is not a JSON object.",
-                    dict_file,
+            data = load_json_file(dict_path)
+            if isinstance(data, dict):
+                self.logger.info(
+                    "Loaded %d common translations from '%s'.",
+                    len(data),
+                    dict_path.name,
                 )
-        except (json.JSONDecodeError, OSError) as err:
+                return {str(k): str(v) for k, v in data.items()}
+            self.logger.warning(
+                "Common translations file '%s' is not a JSON object.",
+                dict_file,
+            )
+        except Exception as err:
             self.logger.error("Failed to load common translations from '%s': %s", dict_file, err)
 
         return {}
@@ -210,7 +242,10 @@ class JSONTranslator:
             if key in translated_data:
                 continue
 
-            target_str = str(val) if val is not None and str(val).strip() else str(key)
+            val_str = val if isinstance(val, str) else ("" if val is None else str(val))
+            target_str = (
+                val_str if val_str.strip() else (key if isinstance(key, str) else str(key))
+            )
 
             # Exact match
             if target_str in common_dict:
@@ -218,12 +253,18 @@ class JSONTranslator:
                 pre_count += 1
                 continue
 
-            # Whitespace-trimmed match with whitespace preservation
+            # Whitespace-trimmed match with fast boundary detection
             stripped = target_str.strip()
             if stripped and stripped in common_dict:
-                leading = target_str[: len(target_str) - len(target_str.lstrip())]
-                trailing = target_str[len(target_str.rstrip()) :]
-                translated_data[key] = f"{leading}{common_dict[stripped]}{trailing}"
+                n_orig = len(target_str)
+                n_strip = len(stripped)
+                if n_orig == n_strip:
+                    translated_data[key] = common_dict[stripped]
+                else:
+                    start = target_str.find(stripped)
+                    leading = target_str[:start]
+                    trailing = target_str[start + n_strip :]
+                    translated_data[key] = f"{leading}{common_dict[stripped]}{trailing}"
                 pre_count += 1
 
         return pre_count
@@ -247,20 +288,26 @@ class JSONTranslator:
         headers, api_url = self._get_api_headers_and_url()
         data = {
             "model": self.config["model"],
-            "messages": [{"role": "system", "content": prompt}, {"role": "user", "content": item}],
+            "messages": [
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": item},
+            ],
             "temperature": 0.0,
             "max_tokens": 2048,
         }
 
         try:
-            resp = requests.post(
-                api_url, headers=headers, json=data, timeout=self.config["request_timeout"]
+            resp = self.session.post(
+                api_url,
+                headers=headers,
+                data=fast_json_dumps_bytes(data),
+                timeout=self.config["request_timeout"],
             )
             if resp.status_code == 200:
                 result_stripped = resp.json()["choices"][0]["message"]["content"].strip()
                 self.logger.info("Section summary generated successfully.")
                 return result_stripped
-        except (requests.RequestException, KeyError, json.JSONDecodeError) as err:
+        except Exception as err:
             self.logger.error("Summarize request failed: %s", err)
         return None
 
@@ -283,20 +330,26 @@ class JSONTranslator:
         headers, api_url = self._get_api_headers_and_url()
         data = {
             "model": self.config["model"],
-            "messages": [{"role": "system", "content": prompt}, {"role": "user", "content": item}],
+            "messages": [
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": item},
+            ],
             "temperature": 0.0,
             "max_tokens": 2048,
         }
 
         try:
-            resp = requests.post(
-                api_url, headers=headers, json=data, timeout=self.config["request_timeout"]
+            resp = self.session.post(
+                api_url,
+                headers=headers,
+                data=fast_json_dumps_bytes(data),
+                timeout=self.config["request_timeout"],
             )
             if resp.status_code == 200:
                 result_stripped = resp.json()["choices"][0]["message"]["content"].strip()
                 self.logger.info("Reduced summary generated successfully.")
                 return result_stripped
-        except (requests.RequestException, KeyError, json.JSONDecodeError) as err:
+        except Exception as err:
             self.logger.error("Summarize summaries request failed: %s", err)
         return None
 
@@ -348,9 +401,10 @@ class JSONTranslator:
         if not texts:
             return {}
 
-        input_dict = {str(i + 1): value for i, (_k, value) in enumerate(texts)}
-        cleaned_dict = {key: clean_japanese_text(val) for key, val in input_dict.items()}
-        json_batch = json.dumps(cleaned_dict, ensure_ascii=False)
+        cleaned_dict = {
+            str(i + 1): clean_japanese_text(value) for i, (_k, value) in enumerate(texts)
+        }
+        json_batch = fast_json_dumps(cleaned_dict, indent=False)
 
         source_lang = self.config.get("source_language", "Japanese")
         target_lang = self.config.get("target_language", "English")
@@ -391,10 +445,14 @@ class JSONTranslator:
         texts: List[Tuple[str, str]],
         fallback_results: Dict[str, str],
     ) -> Dict[str, str]:
+        payload = fast_json_dumps_bytes(data)
         for attempt in range(self.config["max_retries"]):
             try:
-                resp = requests.post(
-                    api_url, headers=headers, json=data, timeout=self.config["request_timeout"]
+                resp = self.session.post(
+                    api_url,
+                    headers=headers,
+                    data=payload,
+                    timeout=self.config["request_timeout"],
                 )
                 if resp.status_code == 200:
                     result = resp.json()
@@ -413,7 +471,7 @@ class JSONTranslator:
                     return fallback_results
                 else:
                     self.logger.error("API Error (%d): %s", resp.status_code, resp.text)
-            except (requests.RequestException, ValueError, json.JSONDecodeError) as err:
+            except Exception as err:
                 self.logger.error("Attempt %d error during translation: %s", attempt + 1, err)
 
             if attempt < self.config["max_retries"] - 1:
@@ -445,25 +503,13 @@ class JSONTranslator:
         if not translation or not translation.strip():
             return False
 
-        error_patterns = [
-            "translation failed",
-            "unable to translate",
-            "error occurred",
-            "something went wrong",
-            "as an ai",
-            "i cannot translate",
-            "translator note:",
-        ]
-
         translation_lower = translation.lower()
-        return not any(pattern in translation_lower for pattern in error_patterns)
+        return not any(pattern in translation_lower for pattern in ERROR_PATTERNS)
 
     def save_progress(self, translated_data: Dict[str, str], progress_file: Path) -> None:
         """Saves current translation progress dictionary to disk."""
         try:
-            progress_file.parent.mkdir(parents=True, exist_ok=True)
-            with open(progress_file, "w", encoding="utf-8") as f:
-                json.dump(translated_data, f, ensure_ascii=False, indent=2)
+            dump_json_file(progress_file, translated_data, indent=True)
             self.logger.info("Progress saved to %s", progress_file)
         except OSError as err:
             self.logger.error("Failed to save progress: %s", err)
@@ -472,11 +518,11 @@ class JSONTranslator:
         """Loads existing progress dictionary if checkpoint file exists."""
         if progress_file.exists():
             try:
-                with open(progress_file, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                self.logger.info("Loaded %d items from progress file.", len(data))
-                return data
-            except (json.JSONDecodeError, OSError) as err:
+                data = load_json_file(progress_file)
+                if isinstance(data, dict):
+                    self.logger.info("Loaded %d items from progress file.", len(data))
+                    return data
+            except Exception as err:
                 self.logger.error("Failed to load progress file: %s", err)
         return {}
 
@@ -485,8 +531,14 @@ class JSONTranslator:
         if self.config.get("source_language") != "Japanese":
             return original_data
 
-        jp_regex = re.compile(r"[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]")
-        filtered_data = {k: v for k, v in original_data.items() if jp_regex.search(str(v))}
+        search = JP_SOURCE_REGEX.search
+        filtered_data = {
+            k: v
+            for k, v in original_data.items()
+            if (v if isinstance(v, str) else str(v))
+            and not (isinstance(v, str) and v.isascii())
+            and search(v if isinstance(v, str) else str(v))
+        }
         excluded = len(original_data) - len(filtered_data)
         print(f"Kept {len(filtered_data)} Japanese lines. Excluded {excluded} non-Japanese lines.")
         return filtered_data
@@ -508,19 +560,22 @@ class JSONTranslator:
         with open(summary_path, "r", encoding="utf-8") as f:
             return f.read()
 
-    def _run_wave(
-        self, giga_chunk: List[List[Tuple[str, str]]], summary: str, translated_data: Dict[str, str]
+    def _run_wave_with_executor(
+        self,
+        executor: ThreadPoolExecutor,
+        giga_chunk: List[List[Tuple[str, str]]],
+        summary: str,
+        translated_data: Dict[str, str],
     ) -> None:
-        """Runs a single parallel wave of translation batches."""
-        with ThreadPoolExecutor(max_workers=WORKER_COUNT) as executor:
-            futures = {
-                executor.submit(self.translate_batch, (idx, chunk, summary)): idx
-                for idx, chunk in enumerate(giga_chunk)
-            }
-            for future in as_completed(futures):
-                res = future.result()
-                if isinstance(res, dict):
-                    translated_data.update(res)
+        """Runs a single parallel wave of translation batches using persistent thread pool."""
+        futures = {
+            executor.submit(self.translate_batch, (idx, chunk, summary)): idx
+            for idx, chunk in enumerate(giga_chunk)
+        }
+        for future in as_completed(futures):
+            res = future.result()
+            if isinstance(res, dict):
+                translated_data.update(res)
 
     def _translate_batches(
         self,
@@ -536,10 +591,11 @@ class JSONTranslator:
             all_batches[i : i + WORKER_COUNT] for i in range(0, len(all_batches), WORKER_COUNT)
         ]
 
-        for giga_index, giga_chunk in enumerate(giga_chunks):
-            self._run_wave(giga_chunk, summary, translated_data)
-            self.save_progress(translated_data, progress_path)
-            self.logger.info("Wave %d/%d complete.", giga_index + 1, len(giga_chunks))
+        with ThreadPoolExecutor(max_workers=WORKER_COUNT) as executor:
+            for giga_index, giga_chunk in enumerate(giga_chunks):
+                self._run_wave_with_executor(executor, giga_chunk, summary, translated_data)
+                self.save_progress(translated_data, progress_path)
+                self.logger.info("Wave %d/%d complete.", giga_index + 1, len(giga_chunks))
 
     def translate_json_file(  # pylint: disable=too-many-locals
         self,
@@ -557,9 +613,7 @@ class JSONTranslator:
             "summary.txt", default_subfolder="processed"
         )
 
-        with open(input_file, "r", encoding="utf-8") as f:
-            original_data = json.load(f)
-
+        original_data = load_json_file(input_file)
         original_data = self._filter_source_data(original_data)
 
         translated_data = self.load_progress(progress_path)
@@ -586,10 +640,7 @@ class JSONTranslator:
                 "All lines resolved via pre-translation or checkpoint. No LLM calls needed."
             )
 
-        output_file.parent.mkdir(parents=True, exist_ok=True)
-        with open(output_file, "w", encoding="utf-8") as f:
-            json.dump(translated_data, f, ensure_ascii=False, indent=2)
-
+        dump_json_file(output_file, translated_data, indent=True)
         self.logger.info("Translation completed successfully: %s", output_file)
 
         if progress_path.exists():
@@ -662,21 +713,26 @@ def process_translation(
     _setup_translation_logger(log_path)
 
     translator = JSONTranslator(config_file)
-    resolved_input, resolved_output = _resolve_translation_paths(
-        translator, input_file, output_file
-    )
+    try:
+        resolved_input, resolved_output = _resolve_translation_paths(
+            translator, input_file, output_file
+        )
 
-    if not resolved_input.exists():
-        print(f"Error: Translation input file '{resolved_input.name}' not found.")
-        return resolved_input
+        if not resolved_input.exists():
+            print(f"Error: Translation input file '{resolved_input.name}' not found.")
+            return resolved_input
 
-    progress_file = resolve_output_path("translation_progress.json", default_subfolder="processed")
-    summary_file = resolve_output_path("summary.txt", default_subfolder="processed")
+        progress_file = resolve_output_path(
+            "translation_progress.json", default_subfolder="processed"
+        )
+        summary_file = resolve_output_path("summary.txt", default_subfolder="processed")
 
-    _check_resume_prompts(progress_file, summary_file, auto_confirm)
+        _check_resume_prompts(progress_file, summary_file, auto_confirm)
 
-    print(f"Starting translation processing: {resolved_input} -> {resolved_output}...")
-    translator.translate_json_file(
-        resolved_input, resolved_output, progress_file, summary_file, auto_confirm=auto_confirm
-    )
-    return resolved_output
+        print(f"Starting translation processing: {resolved_input} -> {resolved_output}...")
+        translator.translate_json_file(
+            resolved_input, resolved_output, progress_file, summary_file, auto_confirm=auto_confirm
+        )
+        return resolved_output
+    finally:
+        translator.close()

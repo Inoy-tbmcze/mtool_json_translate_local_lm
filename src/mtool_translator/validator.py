@@ -7,8 +7,6 @@ Separates passed translations from failed lines needing retranslation.
 
 from __future__ import annotations
 
-import json
-import re
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -19,6 +17,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 import requests
 
 from .config import load_config, resolve_input_path, resolve_output_path
+from .utils import dump_json_file, fast_json_dumps_bytes, fast_json_loads, load_json_file
 
 
 @dataclass
@@ -42,14 +41,38 @@ class ValidationState:
 
 def _parse_validation_json(content: str) -> Dict[str, Any]:
     """Extracts and parses JSON object from LLM response content."""
-    text = re.sub(r"```(?:json)?|```", "", content).strip()
-    match = re.search(r"\{.*\}", text, re.DOTALL)
-    parsed: Dict[str, Any] = json.loads(match.group(0) if match else text)
-    return parsed
+    if not content:
+        return {}
+
+    s = content.strip()
+    start_idx = s.find("{")
+    if start_idx != -1:
+        end_idx = s.rfind("}")
+        if end_idx > start_idx:
+            try:
+                res = fast_json_loads(s[start_idx : end_idx + 1])
+                if isinstance(res, dict):
+                    return res
+            except Exception:
+                pass
+
+    try:
+        from json_repair import repair_json
+
+        repaired = repair_json(s)
+        res = fast_json_loads(repaired)
+        if isinstance(res, dict):
+            return res
+    except Exception:
+        pass
+
+    return {}
 
 
 def call_batch_validation(
-    batch: List[Tuple[int, str, str]], config: Dict[str, Any]
+    batch: List[Tuple[int, str, str]],
+    config: Dict[str, Any],
+    session: Optional[requests.Session] = None,
 ) -> Dict[str, bool]:
     """Sends batch of (ID, JP_source, EN_target) to LLM for translation validation."""
     items_str = "\n".join(f"{idx} | JP: {jp} | EN: {en}" for idx, jp, en in batch)
@@ -78,9 +101,15 @@ def call_batch_validation(
     }
 
     results = {jp: True for _idx, jp, _en in batch}
+    payload = fast_json_dumps_bytes(data)
+
     try:
-        resp = requests.post(
-            config["api_endpoint"], headers=headers, json=data, timeout=config["request_timeout"]
+        requester = session or requests
+        resp = requester.post(
+            config["api_endpoint"],
+            headers=headers,
+            data=payload,
+            timeout=config["request_timeout"],
         )
         resp.raise_for_status()
         raw_content = resp.json()["choices"][0]["message"]["content"].strip()
@@ -88,7 +117,7 @@ def call_batch_validation(
         for idx, jp, _en in batch:
             val = parsed.get(str(idx), 1)
             results[jp] = bool(val == 1 or val is True or str(val).lower() == "true")
-    except (requests.RequestException, json.JSONDecodeError, KeyError, ValueError) as err:
+    except Exception as err:
         print(f"\nWarning: Batch validation request failed ({err}). Defaulting items to VALID (1).")
 
     return results
@@ -100,19 +129,11 @@ def save_progress(
     """Safely writes validation results (*_validated.json, *_retranslate.json) and checkpoints."""
 
     def _write_files() -> None:
-        paths.valid.parent.mkdir(parents=True, exist_ok=True)
-        paths.retranslate.parent.mkdir(parents=True, exist_ok=True)
-        paths.checkpoint.parent.mkdir(parents=True, exist_ok=True)
-
-        with open(paths.valid, "w", encoding="utf-8") as file_v:
-            json.dump(state.validated_data, file_v, ensure_ascii=False, indent=2)
-
-        with open(paths.retranslate, "w", encoding="utf-8") as file_r:
-            json.dump(state.retranslate_data, file_r, ensure_ascii=False, indent=2)
-
-        checkpoint_keys = list(state.validated_data.keys()) + list(state.retranslate_data.keys())
-        with open(paths.checkpoint, "w", encoding="utf-8") as file_c:
-            json.dump({"processed_keys": checkpoint_keys}, file_c, ensure_ascii=False, indent=2)
+        dump_json_file(paths.valid, state.validated_data, indent=True)
+        dump_json_file(paths.retranslate, state.retranslate_data, indent=True)
+        dump_json_file(
+            paths.checkpoint, {"processed_keys": list(state.processed_keys)}, indent=True
+        )
         print(" -> Autosave successful.")
 
     try:
@@ -165,50 +186,52 @@ def _load_validation_state(paths: ValidationPaths) -> ValidationState:
 
     if paths.checkpoint.exists():
         try:
-            with open(paths.checkpoint, "r", encoding="utf-8") as f:
-                chk = json.load(f)
+            chk = load_json_file(paths.checkpoint)
+            if isinstance(chk, dict):
                 processed_keys = set(chk.get("processed_keys", []))
             print(f"--> Found existing checkpoint: {len(processed_keys)} items already processed.")
-        except (json.JSONDecodeError, OSError) as err:
+        except Exception as err:
             print(f"Warning: Could not read checkpoint file ({err}). Starting fresh.")
 
-    for check_p, data_dict in [
+    for check_p, data_dict in (
         (paths.valid, validated_data),
         (paths.retranslate, retranslate_data),
-    ]:
+    ):
         if check_p.exists():
             try:
-                with open(check_p, "r", encoding="utf-8") as f:
-                    loaded = json.load(f)
+                loaded = load_json_file(check_p)
+                if isinstance(loaded, dict):
                     data_dict.update(loaded)
                     processed_keys.update(loaded.keys())
-            except (json.JSONDecodeError, OSError):
+            except Exception:
                 pass
 
     return ValidationState(validated_data, retranslate_data, processed_keys)
 
 
-def _process_validation_wave(
+def _process_validation_wave_with_executor(
+    executor: ThreadPoolExecutor,
     current_wave: List[List[Tuple[int, str, str]]],
     config: Dict[str, Any],
+    session: requests.Session,
     lock: threading.RLock,
     state: ValidationState,
 ) -> None:
-    """Processes a single parallel wave of validation batches."""
-    with ThreadPoolExecutor(max_workers=len(current_wave)) as executor:
-        future_to_batch = {
-            executor.submit(call_batch_validation, batch, config): batch for batch in current_wave
-        }
-        for future in as_completed(future_to_batch):
-            batch = future_to_batch[future]
-            results = future.result()
-            with lock:
-                for _idx, jp, en in batch:
-                    if results.get(jp, True):
-                        state.validated_data[jp] = en
-                    else:
-                        state.retranslate_data[jp] = jp
-                    state.processed_keys.add(jp)
+    """Processes a single parallel wave of validation batches using persistent thread pool."""
+    future_to_batch = {
+        executor.submit(call_batch_validation, batch, config, session): batch
+        for batch in current_wave
+    }
+    for future in as_completed(future_to_batch):
+        batch = future_to_batch[future]
+        results = future.result()
+        with lock:
+            for _idx, jp, en in batch:
+                if results.get(jp, True):
+                    state.validated_data[jp] = en
+                else:
+                    state.retranslate_data[jp] = jp
+                state.processed_keys.add(jp)
 
 
 def _run_validation_waves(
@@ -223,11 +246,22 @@ def _run_validation_waves(
     save_interval = config.get("save_interval", 10)
     waves = [batches[i : i + max_workers] for i in range(0, len(batches), max_workers)]
 
-    for wave_idx, current_wave in enumerate(waves, 1):
-        _process_validation_wave(current_wave, config, lock, state)
-        if wave_idx % save_interval == 0 or wave_idx == len(waves):
-            print(f"Wave {wave_idx}/{len(waves)} complete. Autosaving progress...")
-            save_progress(paths, state, lock)
+    session = requests.Session()
+    adapter = requests.adapters.HTTPAdapter(pool_connections=max_workers, pool_maxsize=max_workers)
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+
+    try:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            for wave_idx, current_wave in enumerate(waves, 1):
+                _process_validation_wave_with_executor(
+                    executor, current_wave, config, session, lock, state
+                )
+                if wave_idx % save_interval == 0 or wave_idx == len(waves):
+                    print(f"Wave {wave_idx}/{len(waves)} complete. Autosaving progress...")
+                    save_progress(paths, state, lock)
+    finally:
+        session.close()
 
 
 def process_validation(
@@ -240,8 +274,7 @@ def process_validation(
     paths = _init_validation_paths(config, input_file, output_dir)
     state = _load_validation_state(paths)
 
-    with open(paths.input_file, "r", encoding="utf-8") as f:
-        data = json.load(f)
+    data = load_json_file(paths.input_file)
 
     unprocessed_items = [(jp, en) for jp, en in data.items() if jp not in state.processed_keys]
 
