@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
-High-Performance Targeted Block-Patching Kernel & CLI for Agent Environments.
-Designed for maximum execution speed, minimal memory overhead, byte-fidelity,
-and Win32 atomic file operations.
+Ultra-High-Performance Targeted Block-Patching Kernel & CLI for Agent Environments.
+Features dual-engine execution:
+  1. Direct hardware-accelerated AVX2 C-kernel (patch_block.dll / patch_block.exe)
+  2. Streamlined zero-copy memoryview fallback engine
 """
 
 from __future__ import annotations
 
-import argparse
+import ctypes
 import json
-import mmap
 import os
 import sys
 import time
@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
 
-# File size threshold to switch from in-memory byte buffer to memory-mapped I/O
+# File size threshold to switch from in-memory byte buffer to memory-mapped I/O in Python fallback
 MMAP_THRESHOLD_BYTES = 16 * 1024 * 1024  # 16 MiB
 
 
@@ -48,18 +48,93 @@ class PatchResult:
         }
 
 
-def _detect_encoding_and_bom(raw_prefix: bytes) -> tuple[str, bytes]:
-    """Detects UTF-8 BOM or defaults to strict UTF-8 with zero decoding overhead."""
-    if raw_prefix.startswith(b"\xef\xbb\xbf"):
-        return "utf-8-sig", b"\xef\xbb\xbf"
-    return "utf-8", b""
+# --- Native C Kernel Integration via ctypes ---
+
+class _CPatchResult(ctypes.Structure):
+    _fields_ = [
+        ("success", ctypes.c_int32),
+        ("target_file", ctypes.c_char_p),
+        ("start_line", ctypes.c_int64),
+        ("end_line", ctypes.c_int64),
+        ("lines_delta", ctypes.c_int64),
+        ("occurrences", ctypes.c_int64),
+        ("error", ctypes.c_char_p),
+    ]
 
 
-def _detect_dominant_newline(content: bytes | mmap.mmap) -> bytes:
-    """
-    Scans the buffer to determine dominant newline convention.
-    Uses SIMD-accelerated count operations.
-    """
+_NATIVE_LIB = None
+_NATIVE_LOADED = False
+
+
+def _get_native_lib():
+    global _NATIVE_LIB, _NATIVE_LOADED
+    if _NATIVE_LOADED:
+        return _NATIVE_LIB
+    _NATIVE_LOADED = True
+
+    script_dir = Path(__file__).resolve().parent
+    dll_candidates = [
+        script_dir / "patch_block.dll",
+        script_dir / "libpatch_block.so",
+        script_dir / "libpatch_block.dylib",
+    ]
+
+    for candidate in dll_candidates:
+        if candidate.is_file():
+            try:
+                lib = ctypes.CDLL(str(candidate))
+                lib.apply_block_patch_c.argtypes = [
+                    ctypes.c_char_p,
+                    ctypes.c_char_p,
+                    ctypes.c_char_p,
+                    ctypes.c_bool,
+                ]
+                lib.apply_block_patch_c.restype = _CPatchResult
+                lib.free_patch_result_c.argtypes = [ctypes.POINTER(_CPatchResult)]
+                lib.free_patch_result_c.restype = None
+                _NATIVE_LIB = lib
+                return _NATIVE_LIB
+            except Exception:
+                continue
+    return None
+
+
+def _apply_block_patch_native(
+    target_file: str,
+    search_block: str,
+    replace_block: str,
+    allow_multiple: bool,
+) -> PatchResult | None:
+    lib = _get_native_lib()
+    if lib is None:
+        return None
+
+    try:
+        c_res = lib.apply_block_patch_c(
+            target_file.encode("utf-8"),
+            search_block.encode("utf-8"),
+            replace_block.encode("utf-8"),
+            allow_multiple,
+        )
+
+        res = PatchResult(
+            success=bool(c_res.success),
+            target_file=c_res.target_file.decode("utf-8") if c_res.target_file else target_file,
+            start_line=int(c_res.start_line),
+            end_line=int(c_res.end_line),
+            lines_delta=int(c_res.lines_delta),
+            occurrences=int(c_res.occurrences),
+            error=c_res.error.decode("utf-8") if c_res.error else "",
+        )
+        lib.free_patch_result_c(ctypes.byref(c_res))
+        return res
+    except Exception:
+        return None
+
+
+# --- High-Performance Python Fallback Engine ---
+
+def _detect_dominant_newline(content: bytes | memoryview) -> bytes:
     probe_slice = content[:65536] if len(content) > 65536 else content
     crlf_count = probe_slice.count(b"\r\n")
     lf_count = probe_slice.count(b"\n") - crlf_count
@@ -67,19 +142,14 @@ def _detect_dominant_newline(content: bytes | mmap.mmap) -> bytes:
 
 
 def _normalize_newlines(text: str, target_newline: str) -> str:
-    """Normalizes all newline variations in a string to the target newline."""
     return text.replace("\r\n", "\n").replace("\r", "\n").replace("\n", target_newline)
 
 
 def _find_matches_early_exit(
-    haystack: bytes | mmap.mmap,
+    haystack: bytes | memoryview,
     needle: bytes,
     allow_multiple: bool,
 ) -> tuple[list[int], str | None]:
-    """
-    Performs fast search with early exit on ambiguity.
-    Returns (match_offsets, error_message).
-    """
     if not needle:
         return [], "Search block cannot be empty."
 
@@ -117,10 +187,6 @@ def _find_matches_early_exit(
 
 
 def _atomic_replace_win32(temp_path: Path, target_path: Path, max_retries: int = 5) -> None:
-    """
-    Atomically replaces target_path with temp_path, with exponential backoff
-    to handle transient Windows file locks (antivirus, search indexing).
-    """
     delay = 0.005
     for attempt in range(max_retries):
         try:
@@ -133,22 +199,19 @@ def _atomic_replace_win32(temp_path: Path, target_path: Path, max_retries: int =
             delay *= 2
 
 
-def apply_block_patch(
+def _apply_block_patch_python(
     target_file: str | Path,
     search_block: str,
     replace_block: str,
     allow_multiple: bool = False,
 ) -> PatchResult:
-    """
-    Atomically replaces an exact contiguous block of text in target_file with new content.
-    Guarantees zero mutation to untouched bytes, preservation of native newlines,
-    and single-pass sub-millisecond execution for typical files.
-    """
     path = Path(target_file).resolve()
+    norm_path_str = str(path).replace("\\", "/")
+
     if not path.is_file():
         return PatchResult(
             success=False,
-            target_file=str(path),
+            target_file=norm_path_str,
             error=f"File not found: {path}",
         )
 
@@ -156,10 +219,11 @@ def apply_block_patch(
     if file_size == 0:
         return PatchResult(
             success=False,
-            target_file=str(path),
+            target_file=norm_path_str,
             error="Target file is empty.",
         )
 
+    import mmap
     file_obj: BinaryIO | None = None
     mm: mmap.mmap | None = None
     raw_content: bytes | mmap.mmap
@@ -173,18 +237,14 @@ def apply_block_patch(
             with open(path, "rb") as f:
                 raw_content = f.read()
 
-        # Step 1: Detect Encoding & Dominant Line Ending
-        _encoding, _bom = _detect_encoding_and_bom(raw_content[:4])
         dominant_nl_bytes = _detect_dominant_newline(raw_content)
         dominant_nl_str = "\r\n" if dominant_nl_bytes == b"\r\n" else "\n"
 
-        # Step 2: Prepare Candidate Needles
         search_normalized = _normalize_newlines(search_block, dominant_nl_str)
         needle_bytes = search_normalized.encode("utf-8")
 
         offsets, err = _find_matches_early_exit(raw_content, needle_bytes, allow_multiple)
 
-        # Fallback: Alternate line endings if not found
         if not offsets and err and "not found" in err:
             alt_nl_str = "\n" if dominant_nl_str == "\r\n" else "\r\n"
             search_alt = _normalize_newlines(search_block, alt_nl_str)
@@ -201,11 +261,10 @@ def apply_block_patch(
         if err or not offsets:
             return PatchResult(
                 success=False,
-                target_file=str(path),
+                target_file=norm_path_str,
                 error=err or "Search block not found.",
             )
 
-        # Step 3: Compute Line Metrics using SIMD memchr (buffer.count(b'\n'))
         first_offset = offsets[0]
         needle_len = len(needle_bytes)
 
@@ -213,26 +272,25 @@ def apply_block_patch(
         lines_in_search = needle_bytes.count(b"\n")
         end_line = start_line + lines_in_search
 
-        # Step 4: Prepare Replacement Block
         replace_normalized = _normalize_newlines(replace_block, dominant_nl_str)
         replacement_bytes = replace_normalized.encode("utf-8")
         lines_in_replace = replacement_bytes.count(b"\n")
         lines_delta = (lines_in_replace - lines_in_search) * len(offsets)
 
-        # Step 5: Construct Patched File with Zero Untouched Byte Mutation
-        temp_file_path = path.with_name(f"{path.name}.tmp.{os.urandom(8).hex()}")
+        mv = memoryview(raw_content)
+        fast_id = f"{os.getpid()}_{time.time_ns():x}"
+        temp_file_path = path.with_name(f"{path.name}.tmp.{fast_id}")
+
         try:
             with open(temp_file_path, "wb") as out_f:
                 last_idx = 0
                 for offset in offsets:
-                    out_f.write(raw_content[last_idx:offset])
-                    out_f.write(replacement_bytes)
+                    out_f.write(mv[last_idx:offset])
+                    if replacement_bytes:
+                        out_f.write(replacement_bytes)
                     last_idx = offset + needle_len
 
-                out_f.write(raw_content[last_idx:])
-                out_f.flush()
-                os.fsync(out_f.fileno())
-
+                out_f.write(mv[last_idx:])
         except Exception:
             if temp_file_path.exists():
                 temp_file_path.unlink(missing_ok=True)
@@ -244,7 +302,6 @@ def apply_block_patch(
         if file_obj is not None:
             file_obj.close()
 
-    # Step 6: Atomic Swap
     try:
         _atomic_replace_win32(temp_file_path, path)
     except Exception as ex:
@@ -252,13 +309,13 @@ def apply_block_patch(
             temp_file_path.unlink(missing_ok=True)
         return PatchResult(
             success=False,
-            target_file=str(path),
+            target_file=norm_path_str,
             error=f"Atomic rename failed: {ex}",
         )
 
     return PatchResult(
         success=True,
-        target_file=str(path),
+        target_file=norm_path_str,
         start_line=start_line,
         end_line=end_line,
         lines_delta=lines_delta,
@@ -266,7 +323,34 @@ def apply_block_patch(
     )
 
 
+# --- Public API ---
+
+def apply_block_patch(
+    target_file: str | Path,
+    search_block: str,
+    replace_block: str,
+    allow_multiple: bool = False,
+) -> PatchResult:
+    """
+    Atomically replaces an exact contiguous block of text in target_file with new content.
+    Automatically leverages AVX2 C-kernel when available, falling back seamlessly to Python.
+    """
+    target_str = str(Path(target_file).resolve())
+
+    # Try native C-kernel first (sub-millisecond in-process execution)
+    res = _apply_block_patch_native(target_str, search_block, replace_block, allow_multiple)
+    if res is not None:
+        return res
+
+    # Fallback to zero-copy memoryview Python engine
+    return _apply_block_patch_python(target_str, search_block, replace_block, allow_multiple)
+
+
+# --- CLI Interface ---
+
 def main() -> int:
+    import argparse
+
     parser = argparse.ArgumentParser(
         description="High-performance atomic block-patching tool."
     )
