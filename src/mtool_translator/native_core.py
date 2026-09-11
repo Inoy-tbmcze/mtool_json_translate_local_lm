@@ -10,7 +10,7 @@ import atexit
 import ctypes
 import platform
 import sys
-from typing import Callable, Optional, Set
+from typing import Callable, Optional, Set, Tuple
 
 # Character set definitions for symbol checking
 SYMBOL_CHARS_BYTES = b"=-_*+#/\\|~<>[]{}()!@$%^&:`';"
@@ -24,14 +24,15 @@ SYMBOL_LUT_BYTES = bytes(SYMBOL_LUT)
 
 
 def _assemble_with_labels(instructions: list[object]) -> bytes:
-    """Two-pass assembler resolving relative 8-bit jump offsets."""
+    """Two-pass assembler resolving relative 8-bit and 32-bit jump offsets."""
     pos = 0
     labels: dict[str, int] = {}
     for item in instructions:
         if isinstance(item, str):
             labels[item] = pos
         elif isinstance(item, tuple):
-            pos += 1
+            tag, _ = item
+            pos += 4 if tag == "rel32" else 1
         elif isinstance(item, (bytes, bytearray)):
             pos += len(item)
 
@@ -40,9 +41,13 @@ def _assemble_with_labels(instructions: list[object]) -> bytes:
         if isinstance(item, str):
             continue
         if isinstance(item, tuple):
-            _tag, target = item
-            disp = labels[str(target)] - (len(out) + 1)
-            out.append(disp & 0xFF)
+            tag, target = item
+            if tag == "rel32":
+                disp = labels[str(target)] - (len(out) + 4)
+                out.extend(disp.to_bytes(4, "little", signed=True))
+            else:
+                disp = labels[str(target)] - (len(out) + 1)
+                out.append(disp & 0xFF)
         elif isinstance(item, (bytes, bytearray)):
             out.extend(item)
     return bytes(out)
@@ -177,6 +182,196 @@ def _build_symbols_machine_code() -> bytes:
     return _assemble_with_labels(instrs)
 
 
+def _build_token_count_machine_code() -> bytes:
+    """Builds x86-64 machine code to count Japanese (Kana/Kanji) and ASCII/Latin chars in UTF-8."""
+    instrs: list[object] = [
+        # test rdx, rdx (if len == 0, return 0)
+        b"\x48\x85\xD2",
+        b"\x0F\x84",
+        ("rel32", "done_zero"),
+        # add rdx, rcx (rdx = end ptr = rcx + len)
+        b"\x48\x01\xCA",
+        # xor r8d, r8d (jp_count = 0)
+        b"\x45\x31\xC0",
+        # xor r9d, r9d (ascii_count = 0)
+        b"\x45\x31\xC9",
+        "loop",
+        # cmp rcx, rdx
+        b"\x48\x39\xD1",
+        # jae finish
+        b"\x0F\x83",
+        ("rel32", "finish"),
+        # movzx eax, byte ptr [rcx]
+        b"\x0F\xB6\x01",
+        # test al, 0x80 (is ASCII?)
+        b"\xA8\x80",
+        # jnz multibyte
+        b"\x75",
+        ("rel8", "multibyte"),
+        # inc r9d (ascii_count++)
+        b"\x41\xFF\xC1",
+        # inc rcx
+        b"\x48\xFF\xC1",
+        # jmp loop
+        b"\xEB",
+        ("rel8", "loop"),
+        "multibyte",
+        # cmp al, 0xE0
+        b"\x3C\xE0",
+        # jae check_3byte
+        b"\x73",
+        ("rel8", "check_3byte"),
+        # 2-byte UTF-8 sequence: lea r10, [rcx + 2]
+        b"\x4C\x8D\x51\x02",
+        # cmp r10, rdx
+        b"\x49\x39\xD2",
+        # ja consume_remaining
+        b"\x0F\x87",
+        ("rel32", "consume_remaining"),
+        # and eax, 0x1F
+        b"\x83\xE0\x1F",
+        # shl eax, 6
+        b"\xC1\xE0\x06",
+        # movzx r11d, byte ptr [rcx + 1]
+        b"\x44\x0F\xB6\x59\x01",
+        # and r11d, 0x3F
+        b"\x41\x83\xE3\x3F",
+        # or eax, r11d
+        b"\x44\x09\xD8",
+        # cmp eax, 0x024F (Latin script upper bound)
+        b"\x3D\x4F\x02\x00\x00",
+        # ja skip_2byte
+        b"\x77",
+        ("rel8", "skip_2byte"),
+        # inc r9d (ascii_count++)
+        b"\x41\xFF\xC1",
+        "skip_2byte",
+        # add rcx, 2
+        b"\x48\x83\xC1\x02",
+        # jmp loop
+        b"\xE9",
+        ("rel32", "loop"),
+        "check_3byte",
+        # cmp al, 0xF0
+        b"\x3C\xF0",
+        # jae check_4byte
+        b"\x73",
+        ("rel8", "check_4byte"),
+        # 3-byte UTF-8 sequence: lea r10, [rcx + 3]
+        b"\x4C\x8D\x51\x03",
+        # cmp r10, rdx
+        b"\x49\x39\xD2",
+        # ja consume_remaining
+        b"\x0F\x87",
+        ("rel32", "consume_remaining"),
+        # Fast filter on lead byte: Kana/Kanji are strictly in 0xE3..0xE9
+        # cmp al, 0xE3
+        b"\x3C\xE3",
+        # jb skip_3byte
+        b"\x72",
+        ("rel8", "skip_3byte"),
+        # cmp al, 0xE9
+        b"\x3C\xE9",
+        # ja skip_3byte
+        b"\x77",
+        ("rel8", "skip_3byte"),
+        # Decode 3-byte UTF-8 to 16-bit code point
+        # and eax, 0x0F
+        b"\x83\xE0\x0F",
+        # shl eax, 12
+        b"\xC1\xE0\x0C",
+        # movzx r11d, byte ptr [rcx + 1]
+        b"\x44\x0F\xB6\x59\x01",
+        # and r11d, 0x3F
+        b"\x41\x83\xE3\x3F",
+        # shl r11d, 6
+        b"\x41\xC1\xE3\x06",
+        # or eax, r11d
+        b"\x44\x09\xD8",
+        # movzx r11d, byte ptr [rcx + 2]
+        b"\x44\x0F\xB6\x59\x02",
+        # and r11d, 0x3F
+        b"\x41\x83\xE3\x3F",
+        # or eax, r11d
+        b"\x44\x09\xD8",
+        # Kana check: 0x3040..0x30FF
+        # cmp eax, 0x3040
+        b"\x3D\x40\x30\x00\x00",
+        # jb check_kanji
+        b"\x72",
+        ("rel8", "check_kanji"),
+        # cmp eax, 0x30FF
+        b"\x3D\xFF\x30\x00\x00",
+        # jbe is_jp
+        b"\x76",
+        ("rel8", "is_jp"),
+        "check_kanji",
+        # Kanji check: 0x4E00..0x9FAF
+        # cmp eax, 0x4E00
+        b"\x3D\x00\x4E\x00\x00",
+        # jb skip_3byte
+        b"\x72",
+        ("rel8", "skip_3byte"),
+        # cmp eax, 0x9FAF
+        b"\x3D\xAF\x9F\x00\x00",
+        # ja skip_3byte
+        b"\x77",
+        ("rel8", "skip_3byte"),
+        "is_jp",
+        # inc r8d (jp_count++)
+        b"\x41\xFF\xC0",
+        "skip_3byte",
+        # add rcx, 3
+        b"\x48\x83\xC1\x03",
+        # jmp loop
+        b"\xE9",
+        ("rel32", "loop"),
+        "check_4byte",
+        # cmp al, 0xF8
+        b"\x3C\xF8",
+        # jae consume_one
+        b"\x73",
+        ("rel8", "consume_one"),
+        # lea r10, [rcx + 4]
+        b"\x4C\x8D\x51\x04",
+        # cmp r10, rdx
+        b"\x49\x39\xD2",
+        # ja consume_remaining
+        b"\x0F\x87",
+        ("rel32", "consume_remaining"),
+        # add rcx, 4
+        b"\x48\x83\xC1\x04",
+        # jmp loop
+        b"\xE9",
+        ("rel32", "loop"),
+        "consume_remaining",
+        # mov rcx, rdx
+        b"\x48\x89\xD1",
+        # jmp finish
+        b"\xEB",
+        ("rel8", "finish"),
+        "consume_one",
+        # inc rcx
+        b"\x48\xFF\xC1",
+        # jmp loop
+        b"\xE9",
+        ("rel32", "loop"),
+        "finish",
+        # mov rax, r8 (jp_count)
+        b"\x4C\x89\xC0",
+        # shl rax, 32
+        b"\x48\xC1\xE0\x20",
+        # or rax, r9 (ascii_count)
+        b"\x4C\x09\xC8",
+        # ret
+        b"\xC3",
+        "done_zero",
+        # xor eax, eax; ret
+        b"\x31\xC0\xC3",
+    ]
+    return _assemble_with_labels(instrs)
+
+
 class NativeKernelManager:
     """Manages JIT allocation and lifetime of native x86-64 execution buffers."""
 
@@ -186,6 +381,7 @@ class NativeKernelManager:
         self._fn_ascii_ident: Optional[Callable[[bytes, int], int]] = None
         self._fn_repeated_bytes: Optional[Callable[[bytes, int, int], int]] = None
         self._fn_count_symbols: Optional[Callable[[bytes, int, bytes], int]] = None
+        self._fn_count_tokens: Optional[Callable[[bytes, int], int]] = None
 
         if sys.platform == "win32" and platform.machine().lower() in ("amd64", "x86_64"):
             self._init_windows_x64()
@@ -230,12 +426,14 @@ class NativeKernelManager:
             fn_sym_t = ctypes.CFUNCTYPE(
                 ctypes.c_size_t, ctypes.c_char_p, ctypes.c_size_t, ctypes.c_char_p
             )
+            fn_tok_t = ctypes.CFUNCTYPE(ctypes.c_uint64, ctypes.c_char_p, ctypes.c_size_t)
 
             self._fn_ascii_ident = alloc_native_func(_build_ascii_ident_machine_code(), fn_ascii_t)
             self._fn_repeated_bytes = alloc_native_func(
                 _build_repeated_bytes_machine_code(), fn_rep_t
             )
             self._fn_count_symbols = alloc_native_func(_build_symbols_machine_code(), fn_sym_t)
+            self._fn_count_tokens = alloc_native_func(_build_token_count_machine_code(), fn_tok_t)
 
             self.is_available = True
         except (OSError, AttributeError, RuntimeError):
@@ -264,6 +462,15 @@ class NativeKernelManager:
         if self._fn_count_symbols is not None:
             return int(self._fn_count_symbols(raw_bytes, len(raw_bytes), SYMBOL_LUT_BYTES))
         return 0
+
+    def count_jp_and_ascii(self, raw_bytes: bytes) -> Tuple[int, int]:
+        """Counts Japanese (Kana/Kanji) and ASCII/Latin chars via native machine code."""
+        if not raw_bytes:
+            return 0, 0
+        if self._fn_count_tokens is not None:
+            packed = int(self._fn_count_tokens(raw_bytes, len(raw_bytes)))
+            return packed >> 32, packed & 0xFFFFFFFF
+        return 0, 0
 
     def cleanup(self) -> None:
         """Frees all JIT-allocated native executable pages."""
@@ -359,3 +566,29 @@ def fast_count_symbols(text: str) -> int:
             return NATIVE_MANAGER.count_symbols(raw)
 
     return sum(1 for char in text if char in SYMBOL_CHARS_SET)
+
+
+def fast_count_jp_and_ascii(text: str) -> Tuple[int, int]:
+    """Counts Japanese Kana/Kanji and ASCII/Latin characters with native machine code acceleration.
+
+    Returns:
+        Tuple of (jp_count, ascii_count).
+    """
+    if not text:
+        return 0, 0
+    if text.isascii():
+        return 0, len(text)
+
+    if NATIVE_MANAGER.is_available:
+        return NATIVE_MANAGER.count_jp_and_ascii(text.encode("utf-8"))
+
+    # Pure Python fallback loop
+    jp_count = 0
+    ascii_count = 0
+    for char in text:
+        code_point = ord(char)
+        if (0x3040 <= code_point <= 0x30FF) or (0x4E00 <= code_point <= 0x9FAF):
+            jp_count += 1
+        elif code_point <= 0x024F:
+            ascii_count += 1
+    return jp_count, ascii_count

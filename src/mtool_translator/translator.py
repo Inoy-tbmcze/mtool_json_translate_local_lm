@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import re
 import socket
 import time
@@ -11,9 +12,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
-from transformers import AutoTokenizer
 
 from .config import load_config, resolve_input_path, resolve_output_path
+from .native_core import fast_count_jp_and_ascii
 from .utils import (
     clean_japanese_text,
     dump_json_file,
@@ -39,6 +40,8 @@ ERROR_PATTERNS = [
 
 DEFAULT_MAX_TOKENS = 1500
 JP_SOURCE_REGEX = re.compile(r"[\u3040-\u30ff\u4e00-\u9faf]")
+JP_TOKEN_RATIO = 1.1
+ASCII_TOKEN_RATIO = 0.28
 
 
 class FastLocalAdapter(requests.adapters.HTTPAdapter):
@@ -50,30 +53,29 @@ class FastLocalAdapter(requests.adapters.HTTPAdapter):
 
 
 class TokenAwareChunker:
-    """Chunks text into token-budgeted batches based on Hugging Face tokenizers."""
+    """Chunks text into token-budgeted batches using an ultra-fast heuristic estimator."""
 
     def __init__(
         self,
-        model_name: str = "meta-llama/Meta-Llama-3-8B-Instruct",
+        model_name: Optional[str] = None,
         max_tokens: int = DEFAULT_MAX_TOKENS,
-    ):
+    ) -> None:
+        self.model_name = model_name
         self.max_tokens = max_tokens
         self.tokenizer: Any = None
-        try:
-            self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-        except (OSError, ValueError) as err:
-            logger.warning(
-                "Could not load tokenizer '%s' (%s). Falling back to character-based heuristic.",
-                model_name,
-                err,
-            )
-            self.tokenizer = None
 
     def estimate_tokens(self, text: str) -> int:
-        """Estimates token count using Hugging Face tokenizer or character-ratio heuristic."""
-        if self.tokenizer:
-            return len(self.tokenizer.encode(text, add_special_tokens=False))
-        return max(1, len(text) // 2)
+        """Estimates token count using character/script ratio heuristics.
+
+        Formula: max(1, floor(jp_count * 1.1 + ascii_count * 0.28))
+        """
+        if not text:
+            return 0
+        if text.isascii():
+            return max(1, math.floor(len(text) * ASCII_TOKEN_RATIO))
+
+        jp_count, ascii_count = fast_count_jp_and_ascii(text)
+        return max(1, math.floor(jp_count * JP_TOKEN_RATIO + ascii_count * ASCII_TOKEN_RATIO))
 
     def create_chunks(self, texts: List[str]) -> List[List[str]]:
         """Groups texts into chunks that fit within the token budget."""
