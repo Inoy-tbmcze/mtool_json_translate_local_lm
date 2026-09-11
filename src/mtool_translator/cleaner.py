@@ -17,11 +17,13 @@ from .config import load_config, resolve_input_path, resolve_output_path
 from .http_client import FastLocalHttpClient, HttpRequestError, default_client
 from .native_core import fast_is_ascii_identifier
 from .utils import (
+    _SENTENCE_PUNCT_RE,
     DEFAULT_MIN_JAPANESE_RATIO,
     DEV_COMMENT_RE,
     DEV_COMMENT_STARTERS,
     ENGINE_KEY_RE,
     FILE_EXTENSIONS,
+    JP_CHAR_PATTERN,
     build_japanese_regex,
     calculate_japanese_ratio,
     dump_json_file,
@@ -35,6 +37,7 @@ from .utils import (
     load_japanese_symbols,
     load_json_file,
     parse_json_array_safely,
+    strip_engine_escape_codes,
 )
 
 
@@ -76,19 +79,38 @@ def _has_engine_markers(key: str, text: str) -> bool:
     )
 
 
+def _is_filepath_candidate(key: str, text: str) -> bool:
+    """Evaluates whether key or text represents a file or asset path."""
+    if ("." in key and key.lower().endswith(FILE_EXTENSIONS)) or (
+        "." in text and text.lower().endswith(FILE_EXTENSIONS)
+    ):
+        return True
+
+    if "/" in key or "\\" in key or "/" in text or "\\" in text:
+        clean_text = strip_engine_escape_codes(text) if "\\" in text else text
+        clean_key = strip_engine_escape_codes(key) if "\\" in key else key
+
+        if "/" in clean_text or "\\" in clean_text or "/" in clean_key or "\\" in clean_key:
+            is_dialogue = bool(JP_CHAR_PATTERN.search(clean_text)) or bool(
+                _SENTENCE_PUNCT_RE.search(clean_text)
+            )
+            key_is_dialogue = bool(JP_CHAR_PATTERN.search(clean_key)) or bool(
+                _SENTENCE_PUNCT_RE.search(clean_key)
+            )
+            if not is_dialogue:
+                return True
+            if ("/" in clean_key or "\\" in clean_key) and not key_is_dialogue:
+                return True
+
+    return False
+
+
 def _is_filepath_or_engine_junk(key: str, text: str) -> str | None:
     """Checks fast filepath, asset, identifier, or engine marker junk."""
     if not text:
         return "empty_string"
 
-    # Fast substring checks for file paths
-    if "/" in key or "\\" in key or "/" in text or "\\" in text:
-        return "filepath_or_asset"
-
-    # Fast file extension check
-    if ("." in key and key.lower().endswith(FILE_EXTENSIONS)) or (
-        "." in text and text.lower().endswith(FILE_EXTENSIONS)
-    ):
+    if _is_filepath_candidate(key, text):
         return "filepath_or_asset"
 
     # Fast ASCII check via native machine code kernel
@@ -103,12 +125,13 @@ def _is_filepath_or_engine_junk(key: str, text: str) -> str | None:
 
 def _is_content_junk(text: str, jp_regex: Any, min_ratio: float) -> str | None:
     """Checks character ratio, comment, or symbol junk."""
-    if not has_japanese_characters(text, jp_regex):
+    clean_text = strip_engine_escape_codes(text) if "\\" in text else text
+    if not has_japanese_characters(clean_text, jp_regex):
         return "non_japanese_text"
 
-    n = len(text)
+    n = len(clean_text)
     if n > 20:
-        jp_ratio = calculate_japanese_ratio(text, jp_regex)
+        jp_ratio = calculate_japanese_ratio(clean_text, jp_regex)
         if jp_ratio < min_ratio:
             return f"low_japanese_ratio ({jp_ratio:.1%} < {min_ratio:.1%})"
 
@@ -117,7 +140,7 @@ def _is_content_junk(text: str, jp_regex: Any, min_ratio: float) -> str | None:
     if l_s and l_s[0] in DEV_COMMENT_STARTERS and DEV_COMMENT_RE.match(l_s):
         return "developer_comment"
 
-    if is_ascii_art_or_symbol_heavy(text, jp_regex):
+    if is_ascii_art_or_symbol_heavy(clean_text, jp_regex):
         return "ascii_art_or_symbol_heavy"
 
     return None
@@ -268,6 +291,19 @@ def _load_existing_progress(paths: CleanerPaths) -> CleanerState:
     return CleanerState(cleaned_data, quarantine_data, processed_keys)
 
 
+def _is_protected_entry(text: str, stripped: str) -> bool:
+    """Checks whether original or stripped text qualifies as protected game text."""
+    if is_protected_sentence(text):
+        return True
+    if stripped is not text and is_protected_sentence(stripped):
+        return True
+    return (
+        is_protected_short_ui_label(stripped)
+        or is_protected_game_item(stripped)
+        or is_protected_katakana_word(stripped)
+    )
+
+
 def _run_stage1_filter(
     data: dict[str, Any], state: CleanerState, jp_regex: Any, min_ratio: float
 ) -> list[tuple[str, Any]]:
@@ -296,12 +332,8 @@ def _run_stage1_filter(
             stage1_junk_count += 1
             continue
 
-        if (
-            is_protected_sentence(text_str)
-            or is_protected_short_ui_label(text_str)
-            or is_protected_game_item(text_str)
-            or is_protected_katakana_word(text_str)
-        ):
+        eval_text = strip_engine_escape_codes(text_str) if "\\" in text_str else text_str
+        if _is_protected_entry(text_str, eval_text):
             state.cleaned_data[key] = text
             state.processed_keys.add(key)
             protected_count += 1

@@ -23,6 +23,7 @@ from mtool_translator.utils import (
     JP_CHAR_PATTERN,
     KATAKANA_WORD_PATTERN,
     PURE_ASCII_IDENTIFIER_PATTERN,
+    RPG_ESCAPE_CODE_RE,
     build_japanese_regex,
     calculate_japanese_ratio,
     has_japanese_characters,
@@ -33,6 +34,7 @@ from mtool_translator.utils import (
     is_protected_short_ui_label,
     load_japanese_symbols,
     parse_json_array_safely,
+    strip_engine_escape_codes,
 )
 
 # Ensure src/ is on sys.path for direct script execution
@@ -51,6 +53,7 @@ __all__ = [
     "JP_CHAR_PATTERN",
     "KATAKANA_WORD_PATTERN",
     "PURE_ASCII_IDENTIFIER_PATTERN",
+    "RPG_ESCAPE_CODE_RE",
     "build_japanese_regex",
     "calculate_japanese_ratio",
     "call_batch_classification",
@@ -65,6 +68,7 @@ __all__ = [
     "parse_json_array_safely",
     "process_json_file",
     "save_progress",
+    "strip_engine_escape_codes",
 ]
 
 if __name__ == "__main__":

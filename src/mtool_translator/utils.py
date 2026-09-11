@@ -162,6 +162,10 @@ DEV_COMMENT_RE = re.compile(
 
 DEV_COMMENT_STARTERS = frozenset("/#<【tfdhbnメ仮未要後仕開TFDHBN")
 
+RPG_ESCAPE_CODE_RE = re.compile(
+    r"\\[A-Za-z]+\[[^\]\r\n]+\]|\\[!^.><{}_|\$\\]|\\[Gg](?![A-Za-z0-9_])"
+)
+
 JAPANESE_SENTENCE_PUNCTUATION = ("。", "！", "？", "…", "...", "」", "♪", "〜")
 
 _SENTENCE_PUNCT_RE = re.compile(r"[。！？…」♪〜]|\.\.\.")
@@ -200,6 +204,16 @@ def is_protected_katakana_word(text: str) -> bool:
         return False
     s = text.strip()
     return bool(KATAKANA_WORD_PATTERN.match(s))
+
+
+def strip_engine_escape_codes(text: str) -> str:
+    """Strips RPG Maker and MTool engine control codes from text.
+
+    Uses fast substring check to bypass regex engine on strings without escape prefixes.
+    """
+    if not text or "\\" not in text:
+        return text
+    return RPG_ESCAPE_CODE_RE.sub("", text)
 
 
 def load_japanese_symbols(symbols_path: Path | str | None = None) -> set[str]:

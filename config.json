@@ -34,8 +34,8 @@
     "api_key": "lm-studio",
     "model": "gemma-4-e4b",
     "input_filename": "translated_20260831_052418.json",
-    "batch_size": 1,
-    "max_workers": 20,
+    "batch_size": 50,
+    "max_workers": 4,
     "save_interval": 120,
     "request_timeout": 60
   }
