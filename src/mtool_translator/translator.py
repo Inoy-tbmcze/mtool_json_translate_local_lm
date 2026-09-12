@@ -288,13 +288,23 @@ class JSONTranslator:
             self.logger.error("%s request failed: %s", log_tag, err)
         return None
 
+    def _generate_blueprint(self, content: str, mode: str = "section") -> str | None:
+        """Generates or synthesizes a Translation Blueprint using the local LLM."""
+        if mode == "section":
+            prompt = SUMMARIZE_PROMPT
+            tag = "Section summary"
+        else:
+            prompt = SUMMARIZE_SUMMARIES_PROMPT
+            tag = "Reduced summary"
+        return self._request_blueprint_summary(prompt, content, tag)
+
     def summarize(self, item: str) -> Any:
         """Generates a concise Translation Blueprint for character and tone consistency."""
-        return self._request_blueprint_summary(SUMMARIZE_PROMPT, item, "Section summary")
+        return self._generate_blueprint(item, mode="section")
 
     def summarize_summaries(self, item: str) -> Any:
         """Synthesizes multiple summary parts into a single blueprint."""
-        return self._request_blueprint_summary(SUMMARIZE_SUMMARIES_PROMPT, item, "Reduced summary")
+        return self._generate_blueprint(item, mode="reduce")
 
     def reduce_summaries(self, lst: list[str], max_depth: int = 5) -> str:
         """Combines and reduces summaries hierarchically."""
@@ -317,7 +327,7 @@ class JSONTranslator:
             next_level_summaries = []
             for chunk in chunks:
                 chunk_text = "\n".join(chunk)
-                summary = self.summarize_summaries(chunk_text)
+                summary = self._generate_blueprint(chunk_text, mode="reduce")
                 if summary:
                     next_level_summaries.append(summary)
                 else:
@@ -333,7 +343,7 @@ class JSONTranslator:
             return current_items[0]
 
         final_concat = "\n\n".join(current_items)
-        final_summary = self.summarize_summaries(final_concat)
+        final_summary = self._generate_blueprint(final_concat, mode="reduce")
         return final_summary if final_summary else final_concat
 
     def translate_batch(self, item: tuple[int, list[tuple[str, str]], str]) -> dict[str, str]:

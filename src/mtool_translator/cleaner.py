@@ -22,7 +22,7 @@ from .utils import (
     DEV_COMMENT_RE,
     DEV_COMMENT_STARTERS,
     ENGINE_KEY_RE,
-    FILE_EXTENSIONS_SET,
+    FILE_EXTENSIONS,
     JP_CHAR_PATTERN,
     build_japanese_regex,
     calculate_japanese_ratio,
@@ -94,12 +94,14 @@ def _is_filepath_candidate(
     clean_text: str | None = None,
 ) -> bool:
     """Evaluates whether key or text represents a file or asset path."""
-    key_dot = key.rfind(".")
-    if key_dot != -1 and key[key_dot:].lower() in FILE_EXTENSIONS_SET:
-        return True
-    text_dot = text.rfind(".")
-    if text_dot != -1 and text[text_dot:].lower() in FILE_EXTENSIONS_SET:
-        return True
+    if "." in key:
+        key_dot = key.rfind(".")
+        if key[key_dot:].lower() in FILE_EXTENSIONS:
+            return True
+    if "." in text:
+        text_dot = text.rfind(".")
+        if text[text_dot:].lower() in FILE_EXTENSIONS:
+            return True
 
     if "/" in key or "\\" in key or "/" in text or "\\" in text:
         c_text = (
@@ -218,7 +220,7 @@ def is_stage1_junk(
 
     reason = _is_filepath_or_engine_junk(
         k, s, clean_key=c_key, clean_text=c_text
-    ) or _is_content_junk(s, jp_regex, min_ratio, clean_text=c_text)
+    ) or _is_content_junk(c_text, jp_regex, min_ratio, clean_text=c_text)
     if reason:
         return True, reason
     return False, ""
@@ -395,12 +397,15 @@ def _run_stage1_filter(
         text_str = text if isinstance(check_target, str) else str(check_target)
         key_str = key if isinstance(key, str) else str(key)
 
-        clean_text = strip_engine_escape_codes(text_str) if "\\" in text_str else text_str
-        clean_key = strip_engine_escape_codes(key_str) if "\\" in key_str else key_str
+        s = text_str.strip()
+        k = key_str.strip()
+
+        clean_text = strip_engine_escape_codes(s) if "\\" in s else s
+        clean_key = strip_engine_escape_codes(k) if "\\" in k else k
 
         is_junk, reason = is_stage1_junk(
-            key_str,
-            text_str,
+            k,
+            s,
             jp_regex,
             min_ratio=min_ratio,
             clean_key=clean_key,
@@ -416,7 +421,7 @@ def _run_stage1_filter(
             stage1_junk_count += 1
             continue
 
-        if _is_protected_entry(text_str, clean_text):
+        if _is_protected_entry(s, clean_text):
             state.cleaned_data[key] = text
             state.processed_keys.add(key)
             protected_count += 1

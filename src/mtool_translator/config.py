@@ -9,12 +9,6 @@ from typing import Any
 from .utils import load_json_file
 
 
-def _read_json_file(path: Path) -> dict[str, Any]:
-    """Loads JSON file using unified fast SIMD/native loader."""
-    data = load_json_file(path)
-    return data if isinstance(data, dict) else {}
-
-
 @functools.lru_cache(maxsize=1)
 def get_project_root() -> Path:
     """Finds the project root directory based on landmark files."""
@@ -87,7 +81,9 @@ def load_config(
     raw_config: dict[str, Any] = {}
     if config_path.exists():
         try:
-            raw_config = _read_json_file(config_path)
+            loaded = load_json_file(config_path)
+            if isinstance(loaded, dict):
+                raw_config = loaded
         except (OSError, ValueError, TypeError, KeyError) as err:
             print(f"Warning: Failed to read '{config_path.name}' ({err}). Using defaults.")
     else:

@@ -140,7 +140,7 @@ def _create_optimized_socket(
 
 
 # pylint: disable=too-few-public-methods
-class _FastSendOutputMixin:
+class _AtomicSendMixin:
     """Zero-overhead mixin providing atomic header-body socket buffering."""
 
     _buffer: list[bytes]
@@ -163,7 +163,10 @@ class _FastSendOutputMixin:
                 self.send(message_body)
 
 
-class _FastHTTPConnection(_FastSendOutputMixin, http.client.HTTPConnection):
+_FastSendOutputMixin = _AtomicSendMixin
+
+
+class _FastHTTPConnection(_AtomicSendMixin, http.client.HTTPConnection):
     """Custom HTTPConnection applying native socket optimizations and atomic header-body sends."""
 
     _buffer: list[bytes]
@@ -176,7 +179,7 @@ class _FastHTTPConnection(_FastSendOutputMixin, http.client.HTTPConnection):
         self.sock = _create_optimized_socket(self.host, self.port, self.timeout)
 
 
-class _FastHTTPSConnection(_FastSendOutputMixin, http.client.HTTPSConnection):
+class _FastHTTPSConnection(_AtomicSendMixin, http.client.HTTPSConnection):
     """Custom HTTPSConnection applying TLS wrapping and atomic header-body sends."""
 
     _buffer: list[bytes]

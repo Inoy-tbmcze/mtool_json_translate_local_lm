@@ -12,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
-from .native_core import fast_count_symbols, fast_has_repeated_chars
+from .native_core import fast_count_symbols, fast_find_json_bounds, fast_has_repeated_chars
 
 try:
     import orjson
@@ -94,7 +94,7 @@ DEFAULT_JP_SYMBOLS = [
     "。",
 ]
 
-FILE_EXTENSIONS = (
+FILE_EXTENSIONS = frozenset((
     ".png",
     ".jpg",
     ".jpeg",
@@ -121,9 +121,9 @@ FILE_EXTENSIONS = (
     ".mat",
     ".prefab",
     ".txt",
-)
+))
 
-FILE_EXTENSIONS_SET = frozenset(FILE_EXTENSIONS)
+FILE_EXTENSIONS_SET = FILE_EXTENSIONS  # Backward compatibility alias
 
 ENGINE_KEY_RE = re.compile(
     r"(?:フレーム\s*\d+$|"
@@ -255,8 +255,12 @@ def calculate_japanese_ratio(text: str, jp_regex: re.Pattern, exclude_noise: boo
     if not text:
         return 0.0
 
+    # Fast O(1) early-exit if no Japanese characters or symbols match
+    if not jp_regex.search(text):
+        return 0.0
+
     if not exclude_noise:
-        jp_char_count = jp_regex.subn("", text)[1]
+        jp_char_count = sum(1 for _ in jp_regex.finditer(text))
         return jp_char_count / len(text)
 
     filtered = _FILTER_NOISE_RE.sub("", text)
@@ -264,7 +268,7 @@ def calculate_japanese_ratio(text: str, jp_regex: re.Pattern, exclude_noise: boo
     den = len(target)
     if den == 0:
         return 0.0
-    jp_char_count = jp_regex.subn("", target)[1]
+    jp_char_count = sum(1 for _ in jp_regex.finditer(target))
     return jp_char_count / den
 
 
@@ -317,10 +321,13 @@ def _strip_markdown_fences(text: str) -> str:
     return text[f1 + 3 : f2].strip() if f2 > f1 + 3 else text[f1 + 3 :].strip()
 
 
-def _extract_container_slice(text: str) -> tuple[int, int]:
+def _extract_container_slice(text: str | bytes) -> tuple[int, int]:
     """Finds starting and ending indices of outermost JSON container."""
     if not text:
         return -1, -1
+
+    if isinstance(text, (bytes, bytearray)):
+        return fast_find_json_bounds(bytes(text))
 
     n = len(text)
     first_char = text[0]
