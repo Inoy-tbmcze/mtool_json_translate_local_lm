@@ -36,7 +36,7 @@ ERROR_PATTERNS = [
     "model overloaded",
 ]
 
-DEFAULT_MAX_TOKENS = 1500
+DEFAULT_MAX_TOKENS = 43690
 JP_SOURCE_REGEX = re.compile(r"[\u3040-\u30ff\u4e00-\u9faf]")
 JP_TOKEN_RATIO = 1.1
 ASCII_TOKEN_RATIO = 0.28
@@ -271,7 +271,7 @@ class JSONTranslator:
                 {"role": "user", "content": item},
             ],
             "temperature": 0.0,
-            "max_tokens": 2048,
+            "max_tokens": DEFAULT_MAX_TOKENS,
         }
         try:
             resp = self.session.post(
@@ -385,7 +385,7 @@ class JSONTranslator:
                 {"role": "user", "content": json_batch},
             ],
             "temperature": 0.2,
-            "max_tokens": 65536,
+            "max_tokens": DEFAULT_MAX_TOKENS,
         }
 
         return self._send_translation_request(api_url, headers, data, texts, fallback_results)
