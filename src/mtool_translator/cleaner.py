@@ -40,6 +40,8 @@ from .utils import (
     strip_engine_escape_codes,
 )
 
+COMMENT_PREFIXES: tuple[str, ...] = ("//", "/*", "#", "<!--")
+
 
 @dataclass
 class CleanerPaths:
@@ -79,6 +81,11 @@ def _has_engine_markers(key: str, text: str) -> bool:
     )
 
 
+def _is_dev_comment(text: str) -> bool:
+    """Evaluates whether text represents a developer comment with O(1) starter pruning."""
+    return bool(text and text[0] in DEV_COMMENT_STARTERS and DEV_COMMENT_RE.match(text))
+
+
 def _is_filepath_candidate(key: str, text: str) -> bool:
     """Evaluates whether key or text represents a file or asset path."""
     if ("." in key and key.lower().endswith(FILE_EXTENSIONS)) or (
@@ -90,16 +97,24 @@ def _is_filepath_candidate(key: str, text: str) -> bool:
         clean_text = strip_engine_escape_codes(text) if "\\" in text else text
         clean_key = strip_engine_escape_codes(key) if "\\" in key else key
 
-        if "/" in clean_text or "\\" in clean_text or "/" in clean_key or "\\" in clean_key:
+        # Exclude developer comment starters from being treated as path separators
+        text_has_path = (
+            "/" in clean_text or "\\" in clean_text
+        ) and not clean_text.startswith(COMMENT_PREFIXES)
+        key_has_path = (
+            "/" in clean_key or "\\" in clean_key
+        ) and not clean_key.startswith(COMMENT_PREFIXES)
+
+        if text_has_path or key_has_path:
             is_dialogue = bool(JP_CHAR_PATTERN.search(clean_text)) or bool(
                 _SENTENCE_PUNCT_RE.search(clean_text)
             )
             key_is_dialogue = bool(JP_CHAR_PATTERN.search(clean_key)) or bool(
                 _SENTENCE_PUNCT_RE.search(clean_key)
             )
-            if not is_dialogue:
+            if text_has_path and not is_dialogue:
                 return True
-            if ("/" in clean_key or "\\" in clean_key) and not key_is_dialogue:
+            if key_has_path and not key_is_dialogue:
                 return True
 
     return False
@@ -124,15 +139,10 @@ def _is_filepath_or_engine_junk(key: str, text: str) -> str | None:
 
 
 def _is_content_junk(text: str, jp_regex: Any, min_ratio: float) -> str | None:
-    """Checks character ratio, comment, or symbol junk."""
+    """Checks character ratio or symbol junk."""
     clean_text = strip_engine_escape_codes(text) if "\\" in text else text
     if not has_japanese_characters(clean_text, jp_regex):
         return "non_japanese_text"
-
-    # Fast comment check on first non-whitespace character
-    l_s = text.lstrip()
-    if l_s and l_s[0] in DEV_COMMENT_STARTERS and DEV_COMMENT_RE.match(l_s):
-        return "developer_comment"
 
     if is_ascii_art_or_symbol_heavy(clean_text, jp_regex):
         return "ascii_art_or_symbol_heavy"
@@ -157,6 +167,14 @@ def is_stage1_junk(
     """Returns (is_junk, reason) based on fast heuristic rules."""
     s = text.strip() if text else ""
     k = key.strip() if key else ""
+
+    if not s:
+        return True, "empty_string"
+
+    # Fast developer comment detection before generic slash or path evaluation
+    if _is_dev_comment(s) or _is_dev_comment(k):
+        return True, "developer_comment"
+
     reason = _is_filepath_or_engine_junk(k, s) or _is_content_junk(s, jp_regex, min_ratio)
     if reason:
         return True, reason

@@ -962,6 +962,8 @@ class TestPipelineHarness(unittest.TestCase):
 
         # Developer comments with punctuation must still be quarantined as developer_comment
         comment_strings = [
+            "// FIXME:",
+            "/* 一時的にコメントアウト ... */",
             "/* 一時的にコメントアウト。製品版で有効化 */",
             "// FIXME: ボス第2形態移行時のBGMクロスフェード修正",
             "// NOTE: ここでプレイヤーの移動速度を一時的に半減させる",
@@ -980,6 +982,24 @@ class TestPipelineHarness(unittest.TestCase):
                 reason,
                 "developer_comment",
                 f"Comment '{text}' had wrong reason: '{reason}'",
+            )
+
+        # Developer comments with path-like keys
+        path_comments = [
+            ("map01/1", "// FIXME: check boss triggers"),
+            ("common_events/42", "/* 一時的にコメントアウト ... */"),
+            ("system/config.json", "// NOTE: sound buffer"),
+        ]
+        for k, comment_text in path_comments:
+            is_junk, reason = is_stage1_junk(k, comment_text, jp_regex)
+            self.assertTrue(
+                is_junk,
+                f"Comment '{comment_text}' with key '{k}' was not quarantined",
+            )
+            self.assertEqual(
+                reason,
+                "developer_comment",
+                f"Comment '{comment_text}' with key '{k}' had wrong reason: '{reason}'",
             )
 
         # Verify calculate_japanese_ratio with and without noise filtering
