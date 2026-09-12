@@ -258,16 +258,16 @@ def calculate_japanese_ratio(
         return 0.0
 
     if not exclude_noise:
-        jp_char_count = len(jp_regex.findall(text))
+        jp_char_count = jp_regex.subn("", text)[1]
         return jp_char_count / len(text)
 
     filtered = _FILTER_NOISE_RE.sub("", text)
-    if not filtered:
-        jp_char_count = len(jp_regex.findall(text))
-        return jp_char_count / len(text)
-
-    jp_char_count = len(jp_regex.findall(filtered))
-    return jp_char_count / len(filtered)
+    target = filtered if filtered else text
+    den = len(target)
+    if den == 0:
+        return 0.0
+    jp_char_count = jp_regex.subn("", target)[1]
+    return jp_char_count / den
 
 
 def has_japanese_characters(text: str, jp_regex: re.Pattern) -> bool:
@@ -321,22 +321,39 @@ def _strip_markdown_fences(text: str) -> str:
 
 def _extract_container_slice(text: str) -> tuple[int, int]:
     """Finds starting and ending indices of outermost JSON container."""
-    idx_brace = text.find("{")
-    idx_bracket = text.find("[")
+    if not text:
+        return -1, -1
 
-    if idx_brace == -1:
-        start = idx_bracket
-    elif idx_bracket == -1:
-        start = idx_brace
+    n = len(text)
+    first_char = text[0]
+    last_char = text[-1]
+
+    # Fast O(1) path for standard, well-formed JSON strings
+    if (first_char == "{" or first_char == "[") and (last_char == "}" or last_char == "]"):
+        return 0, n - 1
+
+    if first_char == "{" or first_char == "[":
+        start = 0
     else:
-        start = min(idx_brace, idx_bracket)
+        idx_brace = text.find("{")
+        idx_bracket = text.find("[")
+        if idx_brace == -1:
+            start = idx_bracket
+        elif idx_bracket == -1:
+            start = idx_brace
+        else:
+            start = min(idx_brace, idx_bracket)
 
     if start == -1:
         return -1, -1
 
-    last_brace = text.rfind("}")
-    last_bracket = text.rfind("]")
-    end = max(last_brace, last_bracket)
+    if last_char == "}" or last_char == "]":
+        end = n - 1
+    else:
+        last_brace = text.rfind("}")
+        last_bracket = text.rfind("]")
+        end = max(last_brace, last_bracket)
+
     return start, end
 
 

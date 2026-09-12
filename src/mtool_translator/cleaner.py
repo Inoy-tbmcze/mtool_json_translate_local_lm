@@ -88,7 +88,12 @@ def _is_dev_comment(text: str) -> bool:
     return bool(text and text[0] in DEV_COMMENT_STARTERS and DEV_COMMENT_RE.match(text))
 
 
-def _is_filepath_candidate(key: str, text: str) -> bool:
+def _is_filepath_candidate(
+    key: str,
+    text: str,
+    clean_key: str | None = None,
+    clean_text: str | None = None,
+) -> bool:
     """Evaluates whether key or text represents a file or asset path."""
     key_dot = key.rfind(".")
     if key_dot != -1 and key[key_dot:].lower() in FILE_EXTENSIONS_SET:
@@ -98,23 +103,31 @@ def _is_filepath_candidate(key: str, text: str) -> bool:
         return True
 
     if "/" in key or "\\" in key or "/" in text or "\\" in text:
-        clean_text = strip_engine_escape_codes(text) if "\\" in text else text
-        clean_key = strip_engine_escape_codes(key) if "\\" in key else key
+        c_text = (
+            clean_text
+            if clean_text is not None
+            else (strip_engine_escape_codes(text) if "\\" in text else text)
+        )
+        c_key = (
+            clean_key
+            if clean_key is not None
+            else (strip_engine_escape_codes(key) if "\\" in key else key)
+        )
 
         # Exclude developer comment starters from being treated as path separators
         text_has_path = (
-            "/" in clean_text or "\\" in clean_text
-        ) and not clean_text.startswith(COMMENT_PREFIXES)
+            "/" in c_text or "\\" in c_text
+        ) and not c_text.startswith(COMMENT_PREFIXES)
         key_has_path = (
-            "/" in clean_key or "\\" in clean_key
-        ) and not clean_key.startswith(COMMENT_PREFIXES)
+            "/" in c_key or "\\" in c_key
+        ) and not c_key.startswith(COMMENT_PREFIXES)
 
         if text_has_path or key_has_path:
-            is_dialogue = bool(JP_CHAR_PATTERN.search(clean_text)) or bool(
-                _SENTENCE_PUNCT_RE.search(clean_text)
+            is_dialogue = bool(JP_CHAR_PATTERN.search(c_text)) or bool(
+                _SENTENCE_PUNCT_RE.search(c_text)
             )
-            key_is_dialogue = bool(JP_CHAR_PATTERN.search(clean_key)) or bool(
-                _SENTENCE_PUNCT_RE.search(clean_key)
+            key_is_dialogue = bool(JP_CHAR_PATTERN.search(c_key)) or bool(
+                _SENTENCE_PUNCT_RE.search(c_key)
             )
             if text_has_path and not is_dialogue:
                 return True
@@ -124,12 +137,17 @@ def _is_filepath_candidate(key: str, text: str) -> bool:
     return False
 
 
-def _is_filepath_or_engine_junk(key: str, text: str) -> str | None:
+def _is_filepath_or_engine_junk(
+    key: str,
+    text: str,
+    clean_key: str | None = None,
+    clean_text: str | None = None,
+) -> str | None:
     """Checks fast filepath, asset, identifier, or engine marker junk."""
     if not text:
         return "empty_string"
 
-    if _is_filepath_candidate(key, text):
+    if _is_filepath_candidate(key, text, clean_key=clean_key, clean_text=clean_text):
         return "filepath_or_asset"
 
     # Fast ASCII check via native machine code kernel
@@ -142,23 +160,32 @@ def _is_filepath_or_engine_junk(key: str, text: str) -> str | None:
     return None
 
 
-def _is_content_junk(text: str, jp_regex: Any, min_ratio: float) -> str | None:
+def _is_content_junk(
+    text: str,
+    jp_regex: Any,
+    min_ratio: float,
+    clean_text: str | None = None,
+) -> str | None:
     """Checks character ratio or symbol junk."""
-    clean_text = strip_engine_escape_codes(text) if "\\" in text else text
-    if not has_japanese_characters(clean_text, jp_regex):
+    c_text = (
+        clean_text
+        if clean_text is not None
+        else (strip_engine_escape_codes(text) if "\\" in text else text)
+    )
+    if not has_japanese_characters(c_text, jp_regex):
         return "non_japanese_text"
 
-    if is_ascii_art_or_symbol_heavy(clean_text, jp_regex):
+    if is_ascii_art_or_symbol_heavy(c_text, jp_regex):
         return "ascii_art_or_symbol_heavy"
 
     # Semantic Protection: dialogue and valid game strings must not be
     # quarantined by alphanumeric/formatting ratio cutoffs.
-    if is_protected_sentence(clean_text) or is_protected_game_item(clean_text):
+    if is_protected_sentence(c_text) or is_protected_game_item(c_text):
         return None
 
-    n = len(clean_text)
+    n = len(c_text)
     if n > 20:
-        jp_ratio = calculate_japanese_ratio(clean_text, jp_regex)
+        jp_ratio = calculate_japanese_ratio(c_text, jp_regex)
         if jp_ratio < min_ratio:
             return f"low_japanese_ratio ({jp_ratio:.1%} < {min_ratio:.1%})"
 
@@ -166,7 +193,12 @@ def _is_content_junk(text: str, jp_regex: Any, min_ratio: float) -> str | None:
 
 
 def is_stage1_junk(
-    key: str, text: str, jp_regex: Any, min_ratio: float = DEFAULT_MIN_JAPANESE_RATIO
+    key: str,
+    text: str,
+    jp_regex: Any,
+    min_ratio: float = DEFAULT_MIN_JAPANESE_RATIO,
+    clean_key: str | None = None,
+    clean_text: str | None = None,
 ) -> tuple[bool, str]:
     """Returns (is_junk, reason) based on fast heuristic rules."""
     s = text.strip() if text else ""
@@ -179,7 +211,20 @@ def is_stage1_junk(
     if _is_dev_comment(s) or _is_dev_comment(k):
         return True, "developer_comment"
 
-    reason = _is_filepath_or_engine_junk(k, s) or _is_content_junk(s, jp_regex, min_ratio)
+    c_text = (
+        clean_text
+        if clean_text is not None
+        else (strip_engine_escape_codes(s) if "\\" in s else s)
+    )
+    c_key = (
+        clean_key
+        if clean_key is not None
+        else (strip_engine_escape_codes(k) if "\\" in k else k)
+    )
+
+    reason = _is_filepath_or_engine_junk(
+        k, s, clean_key=c_key, clean_text=c_text
+    ) or _is_content_junk(s, jp_regex, min_ratio, clean_text=c_text)
     if reason:
         return True, reason
     return False, ""
@@ -196,14 +241,13 @@ def _send_classification_request(
         "max_tokens": 512,
     }
     headers = {
-        "Content-Type": "application/json",
         "Authorization": f"Bearer {config.get('api_key', 'lm-studio')}",
     }
     requester = session or default_client
     resp = requester.post(
         config["api_endpoint"],
         headers=headers,
-        data=fast_json_dumps_bytes(req_body),
+        json=req_body,
         timeout=config["request_timeout"],
     )
     resp.raise_for_status()
@@ -356,7 +400,17 @@ def _run_stage1_filter(
         text_str = text if isinstance(check_target, str) else str(check_target)
         key_str = key if isinstance(key, str) else str(key)
 
-        is_junk, reason = is_stage1_junk(key_str, text_str, jp_regex, min_ratio=min_ratio)
+        clean_text = strip_engine_escape_codes(text_str) if "\\" in text_str else text_str
+        clean_key = strip_engine_escape_codes(key_str) if "\\" in key_str else key_str
+
+        is_junk, reason = is_stage1_junk(
+            key_str,
+            text_str,
+            jp_regex,
+            min_ratio=min_ratio,
+            clean_key=clean_key,
+            clean_text=clean_text,
+        )
         if is_junk:
             state.quarantine_data[key] = {
                 "val": text,
@@ -367,8 +421,7 @@ def _run_stage1_filter(
             stage1_junk_count += 1
             continue
 
-        eval_text = strip_engine_escape_codes(text_str) if "\\" in text_str else text_str
-        if _is_protected_entry(text_str, eval_text):
+        if _is_protected_entry(text_str, clean_text):
             state.cleaned_data[key] = text
             state.processed_keys.add(key)
             protected_count += 1

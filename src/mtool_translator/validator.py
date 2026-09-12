@@ -77,14 +77,13 @@ def _send_validation_request(
         "max_tokens": 1024,
     }
     headers = {
-        "Content-Type": "application/json",
         "Authorization": f"Bearer {config.get('api_key', 'lm-studio')}",
     }
     requester = session or default_client
     resp = requester.post(
         config["api_endpoint"],
         headers=headers,
-        data=fast_json_dumps_bytes(req_data),
+        json=req_data,
         timeout=config["request_timeout"],
     )
     resp.raise_for_status()

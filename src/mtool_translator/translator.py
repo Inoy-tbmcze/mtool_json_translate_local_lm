@@ -86,8 +86,6 @@ class TokenAwareChunker:
         """
         if not text:
             return 0
-        if text.isascii():
-            return max(1, math.floor(len(text) * ASCII_TOKEN_RATIO))
 
         jp_count, ascii_count = fast_count_jp_and_ascii(text)
         return max(1, math.floor(jp_count * JP_TOKEN_RATIO + ascii_count * ASCII_TOKEN_RATIO))
@@ -281,7 +279,7 @@ class JSONTranslator:
             resp = self.session.post(
                 self.api_url,
                 headers=self.api_headers,
-                data=fast_json_dumps_bytes(data),
+                json=data,
                 timeout=self.config["request_timeout"],
             )
             if resp.status_code == 200:
@@ -392,13 +390,12 @@ class JSONTranslator:
         texts: list[tuple[str, str]],
         fallback_results: dict[str, str],
     ) -> dict[str, str]:
-        payload = fast_json_dumps_bytes(data)
         for attempt in range(self.config["max_retries"]):
             try:
                 resp = self.session.post(
                     api_url,
                     headers=headers,
-                    data=payload,
+                    json=data,
                     timeout=self.config["request_timeout"],
                 )
                 if resp.status_code == 200:
