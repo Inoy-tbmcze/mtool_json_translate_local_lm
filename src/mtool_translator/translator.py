@@ -18,7 +18,6 @@ from .utils import (
     clean_japanese_text,
     dump_json_file,
     fast_json_dumps,
-    fast_json_dumps_bytes,
     load_json_file,
     parse_llm_json_response,
 )
@@ -56,8 +55,7 @@ BLUEPRINT_STRUCTURE = (
 )
 
 SUMMARIZE_PROMPT = (
-    "Analyze the raw text and create a concise Translation Blueprint.\n\n"
-    + BLUEPRINT_STRUCTURE
+    "Analyze the raw text and create a concise Translation Blueprint.\n\n" + BLUEPRINT_STRUCTURE
 )
 
 SUMMARIZE_SUMMARIES_PROMPT = (

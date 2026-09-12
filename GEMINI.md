@@ -34,3 +34,9 @@ When modifying this file:
 - **Append via Matrix**: Add new CLI tasks or scripts directly as rows in the Execution Matrix rather than new descriptive sections.
 - **Preserve Invariants**: Do not alter or remove SCA requirements, interpreter paths, or test harness rules without explicit user request.
 - **Keep Mirror in Sync**: Mirror any updates to [AGENTS.md](file:///E:/ai/projects/mtool_json_translate_local_lm/AGENTS.md).
+- **Block-Patching Guidelines for Agents**: When editing blocks in existing files, NEVER rewrite the full file. Use `block-patcher` ([.agents/skills/block-patcher/scripts/patch_block.exe](file:///E:/ai/projects/mtool_json_translate_local_lm/.agents/skills/block-patcher/scripts/patch_block.exe)) via one of two zero-escaping methods:
+  1. *Dual-File Method (Recommended)*: Write search block to `.search.tmp` and replacement to `.replace.tmp` via `client_create_file`, then run:
+     `& ".agents/skills/block-patcher/scripts/patch_block.exe" --file "path/to/target" --search-file ".search.tmp" --replace-file ".replace.tmp" --clean-tmp`
+  2. *Stdin Verbatim Here-String*:
+     `@'\n{"target_file": "path", "search_block": "...", "replace_block": "..."}\n'@ | & ".agents/skills/block-patcher/scripts/patch_block.exe" --stdin`
+  *Avoid*: Never pass multiline Python code via `python -c "..."` on PowerShell. Prefer IDE tools (`pycharm`/`apply_patch`) or `block-patcher`.

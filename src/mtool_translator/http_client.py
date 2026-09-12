@@ -139,6 +139,7 @@ def _create_optimized_socket(
     raise OSError(f"Could not resolve or connect to {host}:{port}")
 
 
+# pylint: disable=too-few-public-methods
 class _FastSendOutputMixin:
     """Zero-overhead mixin providing atomic header-body socket buffering."""
 

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import sys
 import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -27,7 +27,6 @@ from .utils import (
     build_japanese_regex,
     calculate_japanese_ratio,
     dump_json_file,
-    fast_json_dumps_bytes,
     has_japanese_characters,
     is_ascii_art_or_symbol_heavy,
     is_protected_game_item,
@@ -115,12 +114,10 @@ def _is_filepath_candidate(
         )
 
         # Exclude developer comment starters from being treated as path separators
-        text_has_path = (
-            "/" in c_text or "\\" in c_text
-        ) and not c_text.startswith(COMMENT_PREFIXES)
-        key_has_path = (
-            "/" in c_key or "\\" in c_key
-        ) and not c_key.startswith(COMMENT_PREFIXES)
+        text_has_path = ("/" in c_text or "\\" in c_text) and not c_text.startswith(
+            COMMENT_PREFIXES
+        )
+        key_has_path = ("/" in c_key or "\\" in c_key) and not c_key.startswith(COMMENT_PREFIXES)
 
         if text_has_path or key_has_path:
             is_dialogue = bool(JP_CHAR_PATTERN.search(c_text)) or bool(
@@ -192,6 +189,7 @@ def _is_content_junk(
     return None
 
 
+# pylint: disable=too-many-arguments,too-many-positional-arguments
 def is_stage1_junk(
     key: str,
     text: str,
@@ -212,14 +210,10 @@ def is_stage1_junk(
         return True, "developer_comment"
 
     c_text = (
-        clean_text
-        if clean_text is not None
-        else (strip_engine_escape_codes(s) if "\\" in s else s)
+        clean_text if clean_text is not None else (strip_engine_escape_codes(s) if "\\" in s else s)
     )
     c_key = (
-        clean_key
-        if clean_key is not None
-        else (strip_engine_escape_codes(k) if "\\" in k else k)
+        clean_key if clean_key is not None else (strip_engine_escape_codes(k) if "\\" in k else k)
     )
 
     reason = _is_filepath_or_engine_junk(
@@ -383,6 +377,7 @@ def _is_protected_entry(text: str, stripped: str) -> bool:
     )
 
 
+# pylint: disable=too-many-locals
 def _run_stage1_filter(
     data: dict[str, Any], state: CleanerState, jp_regex: Any, min_ratio: float
 ) -> list[tuple[str, Any]]:
@@ -447,6 +442,7 @@ def _process_wave_with_executor(
     ctx: CleanerWaveContext,
 ) -> None:
     """Processes a single wave of classification batches using the persistent thread pool."""
+
     def _apply(batch: list[tuple[int, str, str]], results: dict[str, bool]) -> None:
         with ctx.lock:
             for _idx, key, text in batch:

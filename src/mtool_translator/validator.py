@@ -6,10 +6,9 @@ Separates passed translations from failed lines needing retranslation.
 
 from __future__ import annotations
 
-import json
 import sys
 import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -18,8 +17,6 @@ from .config import load_config, resolve_input_path, resolve_output_path
 from .http_client import FastLocalHttpClient, HttpRequestError, default_client
 from .utils import (
     dump_json_file,
-    fast_json_dumps_bytes,
-    fast_json_loads,
     load_json_file,
     parse_llm_json_response,
     run_batch_wave,
@@ -220,6 +217,7 @@ def _process_validation_wave_with_executor(
     ctx: ValidationWaveContext,
 ) -> None:
     """Processes a single parallel wave of validation batches using persistent thread pool."""
+
     def _apply(batch: list[tuple[int, str, str]], results: dict[str, bool]) -> None:
         with ctx.lock:
             for _idx, jp, en in batch:

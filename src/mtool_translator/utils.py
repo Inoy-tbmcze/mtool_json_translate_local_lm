@@ -244,9 +244,7 @@ def build_japanese_regex(symbols: set[str]) -> re.Pattern:
 _FILTER_NOISE_RE = re.compile(r"[\s\d\W_]")
 
 
-def calculate_japanese_ratio(
-    text: str, jp_regex: re.Pattern, exclude_noise: bool = True
-) -> float:
+def calculate_japanese_ratio(text: str, jp_regex: re.Pattern, exclude_noise: bool = True) -> float:
     """Calculates the proportion of Japanese characters in a string.
 
     When exclude_noise is True (default), calculates ratio against meaningful
@@ -329,10 +327,10 @@ def _extract_container_slice(text: str) -> tuple[int, int]:
     last_char = text[-1]
 
     # Fast O(1) path for standard, well-formed JSON strings
-    if (first_char == "{" or first_char == "[") and (last_char == "}" or last_char == "]"):
+    if first_char in ("{", "[") and last_char in ("}", "]"):
         return 0, n - 1
 
-    if first_char == "{" or first_char == "[":
+    if first_char in ("{", "["):
         start = 0
     else:
         idx_brace = text.find("{")
@@ -347,7 +345,7 @@ def _extract_container_slice(text: str) -> tuple[int, int]:
     if start == -1:
         return -1, -1
 
-    if last_char == "}" or last_char == "]":
+    if last_char in ("}", "]"):
         end = n - 1
     else:
         last_brace = text.rfind("}")
@@ -640,6 +638,7 @@ def parse_json_array_safely(content: str) -> list:
     return []
 
 
+# pylint: disable=too-many-arguments,too-many-positional-arguments
 def run_batch_wave(
     wave: list[list[Any]],
     executor: ThreadPoolExecutor,
@@ -650,17 +649,13 @@ def run_batch_wave(
     error_tag: str = "Worker thread",
 ) -> None:
     """Executes a parallel wave of batches across threads with resilient retry fallback."""
-    future_to_batch = {
-        executor.submit(worker_fn, batch, config, session): batch
-        for batch in wave
-    }
+    future_to_batch = {executor.submit(worker_fn, batch, config, session): batch for batch in wave}
     for future in as_completed(future_to_batch):
         batch = future_to_batch[future]
         try:
             results = future.result()
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001  # pylint: disable=broad-exception-caught
             print(f"\nWarning: {error_tag} failed ({err}). Retrying batch...")
             results = worker_fn(batch, config, session)
 
         apply_result_fn(batch, results)
-
