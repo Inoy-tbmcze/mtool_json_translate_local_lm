@@ -584,32 +584,9 @@ class NativeKernelManager:
 NATIVE_MANAGER = NativeKernelManager()
 
 
-def build_japanese_bmp_bitmask(symbols: set[str]) -> bytes:
-    """Builds an 8,192-byte bitmask covering all 65,536 code points of the Unicode BMP."""
-    bitmask = bytearray(8192)
-
-    def _set_bit(cp: int) -> None:
-        if 0 <= cp < 65536:
-            bitmask[cp >> 3] |= 1 << (cp & 7)
-
-    # Hiragana (0x3040..0x309F)
-    for code_point in range(0x3040, 0x30A0):
-        _set_bit(code_point)
-
-    # Katakana (0x30A0..0x30FF)
-    for code_point in range(0x30A0, 0x3100):
-        _set_bit(code_point)
-
-    # CJK Unified Ideographs (0x4E00..0x9FAF)
-    for code_point in range(0x4E00, 0x9FB0):
-        _set_bit(code_point)
-
-    # Custom Japanese symbols and punctuation
-    for sym in symbols:
-        for char in sym:
-            _set_bit(ord(char))
-
-    return bytes(bitmask)
+_ASCII_IDENT_ALLOWED_BYTES = frozenset(
+    b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-.() \t\r\n"
+)
 
 
 def fast_is_ascii_identifier(text: str) -> bool:
@@ -623,8 +600,7 @@ def fast_is_ascii_identifier(text: str) -> bool:
     if NATIVE_MANAGER.is_available:
         return NATIVE_MANAGER.is_ascii_ident(raw)
 
-    allowed = set(b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-.() \t\r\n")
-    return all(b in allowed for b in raw)
+    return all(b in _ASCII_IDENT_ALLOWED_BYTES for b in raw)
 
 
 def fast_has_repeated_chars(text: str, min_repeat: int = 5) -> bool:

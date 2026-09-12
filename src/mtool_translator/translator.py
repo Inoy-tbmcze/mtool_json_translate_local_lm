@@ -46,6 +46,8 @@ ASCII_TOKEN_RATIO = 0.28
 class TokenAwareChunker:
     """Chunks text into token-budgeted batches using an ultra-fast heuristic estimator."""
 
+    __slots__ = ("max_tokens", "model_name")
+
     def __init__(
         self,
         model_name: str | None = None,
@@ -53,7 +55,6 @@ class TokenAwareChunker:
     ) -> None:
         self.model_name = model_name
         self.max_tokens = max_tokens
-        self.tokenizer: Any = None
 
     def estimate_tokens(self, text: str) -> int:
         """Estimates token count using character/script ratio heuristics.
@@ -657,19 +658,3 @@ def process_translation(  # pylint: disable=too-many-arguments,too-many-position
             auto_confirm=auto_confirm,
         )
     return out_file
-
-
-def translate_json(
-    config_file: str = "config.json",
-    input_file: str | None = None,
-    output_file: str | None = None,
-    auto_confirm: bool = False,
-) -> bool:
-    """Entrypoint function to run JSON translation pipeline."""
-    process_translation(
-        config_file=config_file,
-        input_file=input_file,
-        output_file=output_file,
-        auto_confirm=auto_confirm,
-    )
-    return True

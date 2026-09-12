@@ -62,3 +62,4 @@ translated_*.json
 # Processed data directory outputs (preserve directory via .gitkeep)
 data/processed/*
 !data/processed/.gitkeep
+/NOTE_TO_SELF

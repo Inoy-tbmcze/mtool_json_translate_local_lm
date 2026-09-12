@@ -22,7 +22,7 @@ from .utils import (
     DEV_COMMENT_RE,
     DEV_COMMENT_STARTERS,
     ENGINE_KEY_RE,
-    FILE_EXTENSIONS,
+    FILE_EXTENSIONS_SET,
     JP_CHAR_PATTERN,
     build_japanese_regex,
     calculate_japanese_ratio,
@@ -89,9 +89,11 @@ def _is_dev_comment(text: str) -> bool:
 
 def _is_filepath_candidate(key: str, text: str) -> bool:
     """Evaluates whether key or text represents a file or asset path."""
-    if ("." in key and key.lower().endswith(FILE_EXTENSIONS)) or (
-        "." in text and text.lower().endswith(FILE_EXTENSIONS)
-    ):
+    key_dot = key.rfind(".")
+    if key_dot != -1 and key[key_dot:].lower() in FILE_EXTENSIONS_SET:
+        return True
+    text_dot = text.rfind(".")
+    if text_dot != -1 and text[text_dot:].lower() in FILE_EXTENSIONS_SET:
         return True
 
     if "/" in key or "\\" in key or "/" in text or "\\" in text:
@@ -238,7 +240,7 @@ def call_batch_classification(
     return results
 
 
-def save_progress(
+def save_progress(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     cleaned_path: Path,
     quarantine_path: Path,
     cleaned_data: dict,

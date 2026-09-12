@@ -123,8 +123,6 @@ FILE_EXTENSIONS = (
 
 FILE_EXTENSIONS_SET = frozenset(FILE_EXTENSIONS)
 
-PURE_ASCII_IDENTIFIER_PATTERN = re.compile(r"^[a-zA-Z0-9_\-\.\(\)\s]+$")
-
 ENGINE_KEY_RE = re.compile(
     r"(?:フレーム\s*\d+$|"
     r"^event\d+【\d+】$|"
@@ -133,10 +131,6 @@ ENGINE_KEY_RE = re.compile(
     r"^\d+_\d+_[\u3040-\u30ff\u4e00-\u9faf]|"
     r"^(?:sound|voice|snd|bgm|se)[\\/])",
     re.IGNORECASE,
-)
-
-FANTASY_ITEM_PATTERN = re.compile(
-    r".*?(?:の花|の草|の薬|の種|の根|の芽|の果実|の石|の剣|の盾|の鎧|の指輪|の巻物|の鍵|の壺|の瓶|の尾|の角|の羽|の皮|の骨)$"
 )
 
 FANTASY_SUFFIXES = (
@@ -176,8 +170,6 @@ DEV_COMMENT_STARTERS = frozenset("/#<【tfdhbnメ仮未要後仕開TFDHBN")
 RPG_ESCAPE_CODE_RE = re.compile(
     r"\\[A-Za-z]+\[[^\]\r\n]+\]|\\[!^.><{}_|\$\\]|\\[Gg](?![A-Za-z0-9_])"
 )
-
-JAPANESE_SENTENCE_PUNCTUATION = ("。", "！", "？", "…", "...", "」", "♪", "〜")
 
 _SENTENCE_PUNCT_RE = re.compile(r"[。！？…」♪〜]|\.\.\.")
 _CODE_CHARS = frozenset(r"/\\}{}=<>")

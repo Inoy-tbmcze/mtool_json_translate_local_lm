@@ -6,6 +6,12 @@ Delegates to mtool_translator.cleaner.
 import sys
 from pathlib import Path
 
+# Ensure src/ is on sys.path for direct script execution
+_SRC_DIR = Path(__file__).resolve().parent / "src"
+if str(_SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(_SRC_DIR))
+
+# pylint: disable=wrong-import-position
 from mtool_translator.cleaner import (
     call_batch_classification,
     is_stage1_junk,
@@ -17,12 +23,9 @@ from mtool_translator.utils import (
     DEFAULT_MIN_JAPANESE_RATIO,
     DEV_COMMENT_RE,
     ENGINE_KEY_RE,
-    FANTASY_ITEM_PATTERN,
     FILE_EXTENSIONS,
-    JAPANESE_SENTENCE_PUNCTUATION,
     JP_CHAR_PATTERN,
     KATAKANA_WORD_PATTERN,
-    PURE_ASCII_IDENTIFIER_PATTERN,
     RPG_ESCAPE_CODE_RE,
     build_japanese_regex,
     calculate_japanese_ratio,
@@ -37,22 +40,14 @@ from mtool_translator.utils import (
     strip_engine_escape_codes,
 )
 
-# Ensure src/ is on sys.path for direct script execution
-_SRC_DIR = Path(__file__).resolve().parent / "src"
-if str(_SRC_DIR) not in sys.path:
-    sys.path.insert(0, str(_SRC_DIR))
-
 __all__ = [
     "DEFAULT_JP_SYMBOLS",
     "DEFAULT_MIN_JAPANESE_RATIO",
     "DEV_COMMENT_RE",
     "ENGINE_KEY_RE",
-    "FANTASY_ITEM_PATTERN",
     "FILE_EXTENSIONS",
-    "JAPANESE_SENTENCE_PUNCTUATION",
     "JP_CHAR_PATTERN",
     "KATAKANA_WORD_PATTERN",
-    "PURE_ASCII_IDENTIFIER_PATTERN",
     "RPG_ESCAPE_CODE_RE",
     "build_japanese_regex",
     "calculate_japanese_ratio",
