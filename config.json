@@ -11,7 +11,7 @@
     "batch_size": 30,
     "max_workers": 4,
     "save_interval": 30,
-    "request_timeout": 60
+    "request_timeout": 120
   },
   "translation": {
     "api_endpoint": "http://127.0.0.1:1234/v1/chat/completions",
@@ -37,6 +37,6 @@
     "batch_size": 50,
     "max_workers": 4,
     "save_interval": 120,
-    "request_timeout": 60
+    "request_timeout": 120
   }
 }
