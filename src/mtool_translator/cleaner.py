@@ -59,6 +59,7 @@ class CleanerState:
     cleaned_data: dict[str, Any]
     quarantine_data: dict[str, Any]
     processed_keys: set[str]
+    dirty: bool = False
 
 
 @dataclass
@@ -243,17 +244,25 @@ def save_progress(
     cleaned_data: dict,
     quarantine_data: dict,
     lock: threading.RLock | None = None,
+    state: CleanerState | None = None,
 ) -> None:
     """Saves progress to disk using high-speed binary serialization."""
+    if state is not None and not state.dirty:
+        return
+
+    def _write_files() -> None:
+        dump_json_file(cleaned_path, cleaned_data, indent=True)
+        dump_json_file(quarantine_path, quarantine_data, indent=True)
+        if state is not None:
+            state.dirty = False
+        print(" -> Autosave successful.")
+
     try:
         if lock is not None:
             with lock:
-                dump_json_file(cleaned_path, cleaned_data, indent=True)
-                dump_json_file(quarantine_path, quarantine_data, indent=True)
+                _write_files()
         else:
-            dump_json_file(cleaned_path, cleaned_data, indent=True)
-            dump_json_file(quarantine_path, quarantine_data, indent=True)
-        print(" -> Autosave successful.")
+            _write_files()
     except OSError as err:
         print(f" -> Error during autosave: {err}")
 
@@ -311,7 +320,7 @@ def _load_existing_progress(paths: CleanerPaths) -> CleanerState:
     if processed_keys:
         print(f"--> Found existing progress: {len(processed_keys)} items already processed.")
 
-    return CleanerState(cleaned_data, quarantine_data, processed_keys)
+    return CleanerState(cleaned_data, quarantine_data, processed_keys, dirty=False)
 
 
 def _is_protected_entry(text: str, stripped: str) -> bool:
@@ -371,6 +380,8 @@ def _run_stage1_filter(
     )
     print(f" - {stage1_junk_count} junk lines quarantined.")
     print(f" - {len(stage2_candidates)} ambiguous strings sent to Stage 2 LLM.")
+    if stage1_junk_count > 0 or protected_count > 0:
+        state.dirty = True
     return stage2_candidates
 
 
@@ -398,6 +409,8 @@ def _process_wave_with_executor(
                         "reason": f"Flagged as internal dev junk by {ctx.config['model']}",
                     }
                 ctx.state.processed_keys.add(key)
+            if batch:
+                ctx.state.dirty = True
 
 
 def _execute_stage2_waves(
@@ -422,7 +435,7 @@ def _execute_stage2_waves(
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             for wave_idx, current_wave in enumerate(waves, 1):
                 _process_wave_with_executor(executor, current_wave, ctx)
-                if wave_idx % save_interval == 0 or wave_idx == len(waves):
+                if wave_idx % save_interval == 0 and wave_idx < len(waves):
                     print(f"Wave {wave_idx}/{len(waves)} complete. Autosaving progress...")
                     save_progress(
                         paths.cleaned,
@@ -430,6 +443,7 @@ def _execute_stage2_waves(
                         state.cleaned_data,
                         state.quarantine_data,
                         lock,
+                        state=state,
                     )
     finally:
         session.close()
@@ -458,7 +472,13 @@ def process_json_file(
         ]
         _execute_stage2_waves(batches, config, paths, state)
 
-    save_progress(paths.cleaned, paths.quarantine, state.cleaned_data, state.quarantine_data)
+    save_progress(
+        paths.cleaned,
+        paths.quarantine,
+        state.cleaned_data,
+        state.quarantine_data,
+        state=state,
+    )
 
     print("\n=== Processing Complete ===")
     print(f"Total Original Lines: {len(raw_data)}")

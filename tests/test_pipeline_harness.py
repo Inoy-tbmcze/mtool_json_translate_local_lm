@@ -524,9 +524,10 @@ def run_cleaner_test(
     input_data: dict[str, str],
     temp_dir: Path,
     output_dir: Path | None = None,
+    input_stem: str = "stage1_raw",
 ) -> StepMetrics:
     """Executes and benchmarks Stage 1: Cleaner step."""
-    raw_file = temp_dir / "stage1_raw.json"
+    raw_file = temp_dir / f"{input_stem}.json"
     dump_json_file(raw_file, input_data)
     chars_total = sum(len(v) for v in input_data.values())
 
@@ -766,9 +767,10 @@ def run_pipeline_test(
     config_file: str | Path,
     raw_data: dict[str, str],
     temp_dir: Path,
+    input_stem: str = "pipeline_raw",
 ) -> StepMetrics:
     """Executes and benchmarks the full unified pipeline (Clean -> Translate -> Validate)."""
-    raw_file = temp_dir / "pipeline_raw.json"
+    raw_file = temp_dir / f"{input_stem}.json"
     dump_json_file(raw_file, raw_data)
     chars_total = sum(len(v) for v in raw_data.values())
 
@@ -1009,6 +1011,96 @@ class TestPipelineHarness(unittest.TestCase):
         self.assertGreaterEqual(ratio_filtered, 0.8)
         self.assertLess(ratio_raw, 0.8)
 
+    def test_06_zero_redundant_io_autosave(self) -> None:
+        """Verifies dirty state tracking and wave branch pruning eliminate redundant I/O."""
+        from unittest.mock import patch
+        from mtool_translator.cleaner import (
+            CleanerPaths,
+            CleanerState,
+            save_progress as cleaner_save_progress,
+        )
+        from mtool_translator.validator import (
+            ValidationPaths,
+            ValidationState,
+            save_progress as validator_save_progress,
+        )
+
+        test_dir = self.temp_path / "zero_io_test"
+        test_dir.mkdir(parents=True, exist_ok=True)
+
+        # 1. Cleaner dirty tracking: not dirty -> 0 writes
+        c_paths = CleanerPaths(
+            input_file=test_dir / "in.json",
+            cleaned=test_dir / "clean.json",
+            quarantine=test_dir / "quar.json",
+        )
+        c_state = CleanerState(
+            cleaned_data={"a": "1"},
+            quarantine_data={},
+            processed_keys={"a"},
+            dirty=False,
+        )
+
+        with patch("mtool_translator.cleaner.dump_json_file") as mock_dump:
+            cleaner_save_progress(
+                c_paths.cleaned,
+                c_paths.quarantine,
+                c_state.cleaned_data,
+                c_state.quarantine_data,
+                state=c_state,
+            )
+            mock_dump.assert_not_called()
+
+            # Dirty state -> 2 file writes, resets dirty to False
+            c_state.dirty = True
+            cleaner_save_progress(
+                c_paths.cleaned,
+                c_paths.quarantine,
+                c_state.cleaned_data,
+                c_state.quarantine_data,
+                state=c_state,
+            )
+            self.assertEqual(mock_dump.call_count, 2)
+            self.assertFalse(c_state.dirty)
+
+            # Consecutive call with no mutation -> 0 writes
+            cleaner_save_progress(
+                c_paths.cleaned,
+                c_paths.quarantine,
+                c_state.cleaned_data,
+                c_state.quarantine_data,
+                state=c_state,
+            )
+            self.assertEqual(mock_dump.call_count, 2)
+
+        # 2. Validator dirty tracking: not dirty -> 0 writes
+        v_paths = ValidationPaths(
+            input_file=test_dir / "trans.json",
+            valid=test_dir / "valid.json",
+            retranslate=test_dir / "retrans.json",
+            checkpoint=test_dir / "chk.json",
+        )
+        v_state = ValidationState(
+            validated_data={"k": "v"},
+            retranslate_data={},
+            processed_keys={"k"},
+            dirty=False,
+        )
+
+        with patch("mtool_translator.validator.dump_json_file") as mock_dump_val:
+            validator_save_progress(v_paths, v_state)
+            mock_dump_val.assert_not_called()
+
+            # Dirty state -> 3 file writes (valid, retranslate, checkpoint)
+            v_state.dirty = True
+            validator_save_progress(v_paths, v_state)
+            self.assertEqual(mock_dump_val.call_count, 3)
+            self.assertFalse(v_state.dirty)
+
+            # Consecutive call -> 0 writes
+            validator_save_progress(v_paths, v_state)
+            self.assertEqual(mock_dump_val.call_count, 3)
+
 
 # ==============================================================================
 # Agent CLI Driver & Benchmark Runner
@@ -1072,9 +1164,17 @@ def execute_harness(
         overall_passed = True
         t_all_start = time.perf_counter()
 
+        input_stem = Path(input_file).stem if input_file else None
+
         for st in steps_to_run:
             if st == "clean":
-                res = run_cleaner_test(config_path, dataset, temp_path, output_dir=out_path)
+                res = run_cleaner_test(
+                    config_path,
+                    dataset,
+                    temp_path,
+                    output_dir=out_path,
+                    **({"input_stem": input_stem} if input_stem else {}),
+                )
             elif st == "translate":
                 res = run_translator_test(config_path, dataset, temp_path)
             elif st == "validate":
@@ -1082,7 +1182,12 @@ def execute_harness(
                 dialogues = {k: v for k, v in dataset.items() if search(v)}
                 res = run_validator_test(config_path, dialogues, temp_path)
             elif st == "pipeline":
-                res = run_pipeline_test(config_path, dataset, temp_path)
+                res = run_pipeline_test(
+                    config_path,
+                    dataset,
+                    temp_path,
+                    **({"input_stem": input_stem} if input_stem else {}),
+                )
             else:
                 continue
 

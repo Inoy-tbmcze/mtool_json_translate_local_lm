@@ -42,6 +42,7 @@ class ValidationState:
     validated_data: dict[str, Any]
     retranslate_data: dict[str, Any]
     processed_keys: set[str]
+    dirty: bool = False
 
 
 @dataclass
@@ -145,6 +146,8 @@ def save_progress(
     paths: ValidationPaths, state: ValidationState, lock: threading.RLock | None = None
 ) -> None:
     """Safely writes validation results (*_validated.json, *_retranslate.json) and checkpoints."""
+    if not state.dirty:
+        return
 
     def _write_files() -> None:
         dump_json_file(paths.valid, state.validated_data, indent=True)
@@ -154,6 +157,7 @@ def save_progress(
             {"processed_keys": list(state.processed_keys)},
             indent=True,
         )
+        state.dirty = False
         print(" -> Autosave successful.")
 
     try:
@@ -226,7 +230,7 @@ def _load_validation_state(paths: ValidationPaths) -> ValidationState:
             except (OSError, ValueError, TypeError):
                 pass
 
-    return ValidationState(validated_data, retranslate_data, processed_keys)
+    return ValidationState(validated_data, retranslate_data, processed_keys, dirty=False)
 
 
 def _process_validation_wave_with_executor(
@@ -249,6 +253,8 @@ def _process_validation_wave_with_executor(
                 else:
                     ctx.state.retranslate_data[jp] = jp
                 ctx.state.processed_keys.add(jp)
+            if batch:
+                ctx.state.dirty = True
 
 
 def _run_validation_waves(
@@ -269,7 +275,7 @@ def _run_validation_waves(
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             for wave_idx, current_wave in enumerate(waves, 1):
                 _process_validation_wave_with_executor(executor, current_wave, ctx)
-                if wave_idx % save_interval == 0 or wave_idx == len(waves):
+                if wave_idx % save_interval == 0 and wave_idx < len(waves):
                     print(f"Wave {wave_idx}/{len(waves)} complete. Autosaving progress...")
                     save_progress(paths, state, lock)
     finally:

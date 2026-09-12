@@ -265,3 +265,4 @@ Tool requirements:
 7. **Autosave & Checkpoints:** Preserve checkpoint logic (`checkpoint.json`, `translation_progress.json`, autosaves) to guarantee that interruptions can resume without data loss.
 8. **Skills Adherence:** Refer to the corresponding `.agents/skills/<skill>/SKILL.md` before executing or modifying pipeline steps.
 9. **Static Code Analysis:** Always verify changes with `.\Make.ps1 sca` and ensure Pylint stays at 10.00/10.
+10. **Patching & Subprocess Best Practices:** Never create temporary patch scripts in the repository root. When running commands with multiline code or f-strings in PowerShell, pass data via stdin using verbatim here-strings (`@' ... '@`) or use `block-patcher`'s `--stdin` mode to avoid quote-stripping and interpolation errors. Prefer IDE tools (`pycharm`/`apply_patch`) when available.

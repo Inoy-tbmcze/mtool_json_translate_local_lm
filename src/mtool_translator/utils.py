@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
+import os
 import re
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -48,12 +51,20 @@ def load_json_file(file_path: str | Path) -> Any:
 
 
 def dump_json_file(file_path: str | Path, data: Any, indent: bool = True) -> None:
-    """Fast binary JSON file dumper."""
+    """Fast binary JSON file dumper with crash-resilient atomic replacement."""
     target = Path(file_path)
     target.parent.mkdir(parents=True, exist_ok=True)
     payload = fast_json_dumps_bytes(data, indent=indent)
-    with open(target, "wb") as file_handle:
-        file_handle.write(payload)
+    tmp_target = target.with_name(f".{target.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    try:
+        with open(tmp_target, "wb") as file_handle:
+            file_handle.write(payload)
+        os.replace(tmp_target, target)
+    except BaseException:
+        if tmp_target.exists():
+            with contextlib.suppress(OSError):
+                tmp_target.unlink()
+        raise
 
 
 DEFAULT_MIN_JAPANESE_RATIO = 0.8
