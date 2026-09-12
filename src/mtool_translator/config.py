@@ -6,21 +6,13 @@ import functools
 from pathlib import Path
 from typing import Any
 
-try:
-    import orjson
+from .utils import load_json_file
 
-    def _read_json_file(path: Path) -> dict[str, Any]:
-        with open(path, "rb") as f:
-            data = orjson.loads(f.read())
-            return data if isinstance(data, dict) else {}
 
-except ImportError:
-    import json
-
-    def _read_json_file(path: Path) -> dict[str, Any]:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            return data if isinstance(data, dict) else {}
+def _read_json_file(path: Path) -> dict[str, Any]:
+    """Loads JSON file using unified fast SIMD/native loader."""
+    data = load_json_file(path)
+    return data if isinstance(data, dict) else {}
 
 
 @functools.lru_cache(maxsize=1)

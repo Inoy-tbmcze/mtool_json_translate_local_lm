@@ -24,7 +24,7 @@
    - Use `fast_json_dumps_bytes` / `fast_json_loads` (`orjson` accelerated) for UTF-8 I/O.
    - Use in-house `repair_json_string` (in [src/mtool_translator/utils.py](file:///E:/ai/projects/mtool_json_translate_local_lm/src/mtool_translator/utils.py)) to parse LLM outputs.
    - Retain checkpointing logic (`checkpoint.json`, `translation_progress.json`).
-4. **Shell Constraints**: Windows PowerShell only (no bash `ls`, `rm`, `cat`, `grep`). Pass multiline code or complex strings via stdin here-strings (`@' ... '@`) to avoid quoting issues.
+4. **Shell Constraints**: Windows PowerShell only (no bash `ls`, `rm`, `cat`, `grep`).
 5. **Anti-Slop / Tone**: Adhere strictly to [.agents/skills/unslop/SKILL.md](file:///E:/ai/projects/mtool_json_translate_local_lm/.agents/skills/unslop/SKILL.md).
 
 ## Editing Guidelines for Agents
@@ -34,3 +34,4 @@ When modifying this file:
 - **Append via Matrix**: Add new CLI tasks or scripts directly as rows in the Execution Matrix rather than new descriptive sections.
 - **Preserve Invariants**: Do not alter or remove SCA requirements, interpreter paths, or test harness rules without explicit user request.
 - **Keep Mirror in Sync**: Mirror any updates to [GEMINI.md](file:///E:/ai/projects/mtool_json_translate_local_lm/GEMINI.md).
+- **Patching & Subprocess Best Practices:** When running commands with multiline code or f-strings in PowerShell, pass data via stdin using verbatim here-strings (`@' ... '@`) or use `block-patcher`'s `--stdin` mode to avoid quote-stripping and interpolation errors. Prefer IDE tools (`pycharm`/`apply_patch`) when available.

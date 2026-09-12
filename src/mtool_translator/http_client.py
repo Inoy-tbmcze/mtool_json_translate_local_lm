@@ -139,17 +139,11 @@ def _create_optimized_socket(
     raise OSError(f"Could not resolve or connect to {host}:{port}")
 
 
-class _FastHTTPConnection(http.client.HTTPConnection):
-    """Custom HTTPConnection applying native socket optimizations and atomic header-body sends."""
+class _FastSendOutputMixin:
+    """Zero-overhead mixin providing atomic header-body socket buffering."""
 
     _buffer: list[bytes]
-
-    def __init__(self, host: str, port: int, timeout: float = 60.0) -> None:
-        super().__init__(host, port, timeout=timeout)
-        self.is_closed = False
-
-    def connect(self) -> None:
-        self.sock = _create_optimized_socket(self.host, self.port, self.timeout)
+    send: Any
 
     def _send_output(self, message_body: Any = None, encode_chunked: bool = False) -> None:
         """Sends headers and payload in a single contiguous buffer to eliminate fragmentation."""
@@ -168,7 +162,20 @@ class _FastHTTPConnection(http.client.HTTPConnection):
                 self.send(message_body)
 
 
-class _FastHTTPSConnection(http.client.HTTPSConnection):
+class _FastHTTPConnection(_FastSendOutputMixin, http.client.HTTPConnection):
+    """Custom HTTPConnection applying native socket optimizations and atomic header-body sends."""
+
+    _buffer: list[bytes]
+
+    def __init__(self, host: str, port: int, timeout: float = 60.0) -> None:
+        super().__init__(host, port, timeout=timeout)
+        self.is_closed = False
+
+    def connect(self) -> None:
+        self.sock = _create_optimized_socket(self.host, self.port, self.timeout)
+
+
+class _FastHTTPSConnection(_FastSendOutputMixin, http.client.HTTPSConnection):
     """Custom HTTPSConnection applying TLS wrapping and atomic header-body sends."""
 
     _buffer: list[bytes]
@@ -181,21 +188,6 @@ class _FastHTTPSConnection(http.client.HTTPSConnection):
         raw_sock = _create_optimized_socket(self.host, self.port, self.timeout)
         context = ssl.create_default_context()
         self.sock = context.wrap_socket(raw_sock, server_hostname=self.host)
-
-    def _send_output(self, message_body: Any = None, encode_chunked: bool = False) -> None:
-        self._buffer.extend((b"", b""))
-        header_bytes = b"\r\n".join(self._buffer)
-        del self._buffer[:]
-        if (
-            message_body is not None
-            and isinstance(message_body, (bytes, bytearray, memoryview))
-            and not encode_chunked
-        ):
-            self.send(header_bytes + message_body)
-        else:
-            self.send(header_bytes)
-            if message_body is not None:
-                self.send(message_body)
 
 
 class _HostConnectionPool:

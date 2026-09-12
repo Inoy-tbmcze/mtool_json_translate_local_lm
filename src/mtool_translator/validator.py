@@ -21,7 +21,8 @@ from .utils import (
     fast_json_dumps_bytes,
     fast_json_loads,
     load_json_file,
-    repair_json_string,
+    parse_llm_json_response,
+    run_batch_wave,
 )
 
 
@@ -57,31 +58,12 @@ class ValidationWaveContext:
 
 def _parse_validation_json(content: str) -> dict[str, Any]:
     """Extracts and parses JSON object from LLM response content."""
-    if not content:
+    if not content or not content.strip():
         return {}
-
-    s = content.strip()
-    start_idx = s.find("{")
-    if start_idx != -1:
-        end_idx = s.rfind("}")
-        if end_idx > start_idx:
-            try:
-                res = fast_json_loads(s[start_idx : end_idx + 1])
-                if isinstance(res, dict):
-                    return res
-            except (ValueError, TypeError, json.JSONDecodeError):
-                pass
-
     try:
-        repaired = repair_json_string(s)
-        if repaired:
-            res = fast_json_loads(repaired)
-            if isinstance(res, dict):
-                return res
-    except (ValueError, TypeError, json.JSONDecodeError):
-        pass
-
-    return {}
+        return parse_llm_json_response(content)
+    except ValueError:
+        return {}
 
 
 def _send_validation_request(
@@ -239,13 +221,7 @@ def _process_validation_wave_with_executor(
     ctx: ValidationWaveContext,
 ) -> None:
     """Processes a single parallel wave of validation batches using persistent thread pool."""
-    future_to_batch = {
-        executor.submit(call_batch_validation, batch, ctx.config, ctx.session): batch
-        for batch in current_wave
-    }
-    for future in as_completed(future_to_batch):
-        batch = future_to_batch[future]
-        results = future.result()
+    def _apply(batch: list[tuple[int, str, str]], results: dict[str, bool]) -> None:
         with ctx.lock:
             for _idx, jp, en in batch:
                 if results.get(jp, True):
@@ -255,6 +231,16 @@ def _process_validation_wave_with_executor(
                 ctx.state.processed_keys.add(jp)
             if batch:
                 ctx.state.dirty = True
+
+    run_batch_wave(
+        wave=current_wave,
+        executor=executor,
+        worker_fn=call_batch_validation,
+        config=ctx.config,
+        apply_result_fn=_apply,
+        session=ctx.session,
+        error_tag="Validation worker thread",
+    )
 
 
 def _run_validation_waves(

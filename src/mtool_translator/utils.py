@@ -7,6 +7,8 @@ import json
 import os
 import re
 import threading
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
@@ -619,3 +621,29 @@ def parse_json_array_safely(content: str) -> list:
         pass
 
     return []
+
+
+def run_batch_wave(
+    wave: list[list[Any]],
+    executor: ThreadPoolExecutor,
+    worker_fn: Callable[..., Any],
+    config: dict[str, Any],
+    apply_result_fn: Callable[[list[Any], Any], None],
+    session: Any = None,
+    error_tag: str = "Worker thread",
+) -> None:
+    """Executes a parallel wave of batches across threads with resilient retry fallback."""
+    future_to_batch = {
+        executor.submit(worker_fn, batch, config, session): batch
+        for batch in wave
+    }
+    for future in as_completed(future_to_batch):
+        batch = future_to_batch[future]
+        try:
+            results = future.result()
+        except Exception as err:
+            print(f"\nWarning: {error_tag} failed ({err}). Retrying batch...")
+            results = worker_fn(batch, config, session)
+
+        apply_result_fn(batch, results)
+

@@ -37,6 +37,7 @@ from .utils import (
     load_japanese_symbols,
     load_json_file,
     parse_json_array_safely,
+    run_batch_wave,
     strip_engine_escape_codes,
 )
 
@@ -393,13 +394,7 @@ def _process_wave_with_executor(
     ctx: CleanerWaveContext,
 ) -> None:
     """Processes a single wave of classification batches using the persistent thread pool."""
-    future_to_batch = {
-        executor.submit(call_batch_classification, batch, ctx.config, ctx.session): batch
-        for batch in current_wave
-    }
-    for future in as_completed(future_to_batch):
-        batch = future_to_batch[future]
-        results = future.result()
+    def _apply(batch: list[tuple[int, str, str]], results: dict[str, bool]) -> None:
         with ctx.lock:
             for _idx, key, text in batch:
                 if results.get(key, True):
@@ -413,6 +408,16 @@ def _process_wave_with_executor(
                 ctx.state.processed_keys.add(key)
             if batch:
                 ctx.state.dirty = True
+
+    run_batch_wave(
+        wave=current_wave,
+        executor=executor,
+        worker_fn=call_batch_classification,
+        config=ctx.config,
+        apply_result_fn=_apply,
+        session=ctx.session,
+        error_tag="Cleaner worker thread",
+    )
 
 
 def _execute_stage2_waves(

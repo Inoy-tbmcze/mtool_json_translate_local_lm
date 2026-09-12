@@ -42,6 +42,29 @@ JP_SOURCE_REGEX = re.compile(r"[\u3040-\u30ff\u4e00-\u9faf]")
 JP_TOKEN_RATIO = 1.1
 ASCII_TOKEN_RATIO = 0.28
 
+BLUEPRINT_STRUCTURE = (
+    "Output MUST follow this exact structure:\n\n"
+    "WORLD & TONE: [Maximum 15 words. Describe setting and tone]\n"
+    "STORY: [Maximum 15 words. Describe core story]\n"
+    "MAIN CHARACTERS (Protagonist and top 2 characters):\n"
+    "- [Original Name] -> [English Name]: [Role], [Gender], [Speaking style]\n"
+    "- [Original Name] -> [English Name]: [Role], [Gender], [Speaking style]\n"
+    "- [Original Name] -> [English Name]: [Role], [Gender], [Speaking style]\n\n"
+    "CHARACTER NAME MAPPINGS (Top 10):\n"
+    "- [Original Name] -> [English Name] ([Gender])\n\n"
+    "Do not output markdown code blocks. Do not add explanations."
+)
+
+SUMMARIZE_PROMPT = (
+    "Analyze the raw text and create a concise Translation Blueprint.\n\n"
+    + BLUEPRINT_STRUCTURE
+)
+
+SUMMARIZE_SUMMARIES_PROMPT = (
+    "Synthesize multi-part translation notes into one short Translation Blueprint.\n\n"
+    + BLUEPRINT_STRUCTURE
+)
+
 
 class TokenAwareChunker:
     """Chunks text into token-budgeted batches using an ultra-fast heuristic estimator."""
@@ -116,6 +139,7 @@ class JSONTranslator:
 
         max_workers = self.config.get("max_workers", 4)
         self.session = FastLocalHttpClient(max_connections=max_workers)
+        self.api_headers, self.api_url = self._get_api_headers_and_url()
 
     def close(self) -> None:
         """Closes the underlying HTTP session."""
@@ -243,23 +267,7 @@ class JSONTranslator:
 
         return pre_count
 
-    def summarize(self, item: str) -> Any:
-        """Generates a concise Translation Blueprint for character and tone consistency."""
-        prompt = (
-            "Analyze the raw text and create a concise Translation Blueprint.\n\n"
-            "Output MUST follow this exact structure:\n\n"
-            "WORLD & TONE: [Maximum 15 words. Describe setting and tone]\n"
-            "STORY: [Maximum 15 words. Describe core story]\n"
-            "MAIN CHARACTERS (Protagonist and top 2 characters):\n"
-            "- [Original Name] -> [English Name]: [Role], [Gender], [Speaking style]\n"
-            "- [Original Name] -> [English Name]: [Role], [Gender], [Speaking style]\n"
-            "- [Original Name] -> [English Name]: [Role], [Gender], [Speaking style]\n\n"
-            "CHARACTER NAME MAPPINGS (Top 10):\n"
-            "- [Original Name] -> [English Name] ([Gender])\n\n"
-            "Do not output markdown code blocks. Do not add explanations."
-        )
-
-        headers, api_url = self._get_api_headers_and_url()
+    def _request_blueprint_summary(self, prompt: str, item: str, log_tag: str) -> str | None:
         data = {
             "model": self.config["model"],
             "messages": [
@@ -269,63 +277,28 @@ class JSONTranslator:
             "temperature": 0.0,
             "max_tokens": 2048,
         }
-
         try:
             resp = self.session.post(
-                api_url,
-                headers=headers,
+                self.api_url,
+                headers=self.api_headers,
                 data=fast_json_dumps_bytes(data),
                 timeout=self.config["request_timeout"],
             )
             if resp.status_code == 200:
                 result_stripped = resp.json()["choices"][0]["message"]["content"].strip()
-                self.logger.info("Section summary generated successfully.")
+                self.logger.info("%s generated successfully.", log_tag)
                 return result_stripped
         except (HttpRequestError, ValueError, KeyError) as err:
-            self.logger.error("Summarize request failed: %s", err)
+            self.logger.error("%s request failed: %s", log_tag, err)
         return None
+
+    def summarize(self, item: str) -> Any:
+        """Generates a concise Translation Blueprint for character and tone consistency."""
+        return self._request_blueprint_summary(SUMMARIZE_PROMPT, item, "Section summary")
 
     def summarize_summaries(self, item: str) -> Any:
         """Synthesizes multiple summary parts into a single blueprint."""
-        prompt = (
-            "Synthesize multi-part translation notes into one short Translation Blueprint.\n\n"
-            "Output MUST follow this exact structure:\n\n"
-            "WORLD & TONE: [Maximum 15 words. Describe setting and tone]\n"
-            "STORY: [Maximum 15 words. Describe core story]\n"
-            "MAIN CHARACTERS (Protagonist and top 2 characters):\n"
-            "- [Original Name] -> [English Name]: [Role], [Gender], [Speaking style]\n"
-            "- [Original Name] -> [English Name]: [Role], [Gender], [Speaking style]\n"
-            "- [Original Name] -> [English Name]: [Role], [Gender], [Speaking style]\n\n"
-            "CHARACTER NAME MAPPINGS (Top 10):\n"
-            "- [Original Name] -> [English Name] ([Gender])\n\n"
-            "Do not output markdown code blocks. Do not add explanations."
-        )
-
-        headers, api_url = self._get_api_headers_and_url()
-        data = {
-            "model": self.config["model"],
-            "messages": [
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": item},
-            ],
-            "temperature": 0.0,
-            "max_tokens": 2048,
-        }
-
-        try:
-            resp = self.session.post(
-                api_url,
-                headers=headers,
-                data=fast_json_dumps_bytes(data),
-                timeout=self.config["request_timeout"],
-            )
-            if resp.status_code == 200:
-                result_stripped = resp.json()["choices"][0]["message"]["content"].strip()
-                self.logger.info("Reduced summary generated successfully.")
-                return result_stripped
-        except (HttpRequestError, ValueError, KeyError) as err:
-            self.logger.error("Summarize summaries request failed: %s", err)
-        return None
+        return self._request_blueprint_summary(SUMMARIZE_SUMMARIES_PROMPT, item, "Reduced summary")
 
     def reduce_summaries(self, lst: list[str], max_depth: int = 5) -> str:
         """Combines and reduces summaries hierarchically."""
