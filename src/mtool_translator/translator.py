@@ -436,10 +436,11 @@ class JSONTranslator:
         self, texts: list[tuple[str, str]], translated_json: dict[str, Any]
     ) -> dict[str, str]:
         translated_results: dict[str, str] = {}
+        cleaned_json = {str(k).strip("\"' \t"): v for k, v in translated_json.items()}
         for i, (key, original_value) in enumerate(texts):
             lookup_key = str(i + 1)
-            if lookup_key in translated_json and translated_json[lookup_key] is not None:
-                translated_line = str(translated_json[lookup_key]).strip()
+            if lookup_key in cleaned_json and cleaned_json[lookup_key] is not None:
+                translated_line = str(cleaned_json[lookup_key]).strip()
                 if self.is_valid_translation(translated_line):
                     translated_results[key] = translated_line
                 else:

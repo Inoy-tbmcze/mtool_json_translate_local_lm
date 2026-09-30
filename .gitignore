@@ -51,6 +51,7 @@ Desktop.ini
 
 # Project runtime logs, summaries, checkpoints and outputs
 *.log
+logs/
 translation.log
 summary.txt
 translation_progress.json
@@ -63,3 +64,4 @@ translated_*.json
 data/processed/*
 !data/processed/.gitkeep
 /NOTE_TO_SELF
+/current_task_notes/

@@ -178,6 +178,9 @@ _CODE_CHARS = frozenset(r"/\\}{}=<>")
 
 JP_CHAR_PATTERN = re.compile(r"[\u3040-\u30ff\u4e00-\u9faf]")
 _RE_TRAILING_COMMA = re.compile(r",\s*([}\]])")
+_RE_DOUBLE_QUOTE_KEY = re.compile(r'([,{]\s*)""(\d+)"\s*:')
+_RE_UNQUOTED_KEY_OPEN = re.compile(r'([,{]\s*)(\d+)"\s*:')
+_RE_COLON_DIGIT_SUFFIX = re.compile(r'(":\s*"[^"]*"):\d+(\s*[,}])')
 _BOX_GRID_RE = re.compile(r"[\u2500-\u257f\u2580-\u259f]")
 _KANA_RE = re.compile(r"[\u3040-\u30ff]")
 _COORD_ROW_RE = re.compile(r"^\s*\d+[┃│]")
@@ -436,11 +439,23 @@ class _JsonRepairMachine:
                 self._handle_structural_char(ch)
         return self._finalize()
 
+    def _handle_escaped_string_char(self, ch: str) -> None:
+        if ch == "\n":
+            self.out[-1] = "\\n"
+        elif ch == "\r":
+            self.out[-1] = "\\r"
+        elif ch == "\t":
+            self.out[-1] = "\\t"
+        elif ord(ch) < 0x20:
+            self.out[-1] = f"\\u{ord(ch):04x}"
+        else:
+            self.out.append(ch)
+        self.escaped = False
+        self.i += 1
+
     def _handle_string_char(self, ch: str) -> None:
         if self.escaped:
-            self.out.append(ch)
-            self.escaped = False
-            self.i += 1
+            self._handle_escaped_string_char(ch)
             return
 
         if ch == "\\":
@@ -605,12 +620,16 @@ def repair_json_string(raw: str) -> str:
             fast_json_loads(candidate)
             return candidate
         except (ValueError, TypeError, json.JSONDecodeError):
-            cand_no_comma = _RE_TRAILING_COMMA.sub(r"\1", candidate)
+            cand_normalized = _RE_DOUBLE_QUOTE_KEY.sub(r'\1"\2":', candidate)
+            cand_normalized = _RE_UNQUOTED_KEY_OPEN.sub(r'\1"\2":', cand_normalized)
+            cand_normalized = _RE_COLON_DIGIT_SUFFIX.sub(r"\1\2", cand_normalized)
+            cand_no_comma = _RE_TRAILING_COMMA.sub(r"\1", cand_normalized)
             try:
                 fast_json_loads(cand_no_comma)
                 return cand_no_comma
             except (ValueError, TypeError, json.JSONDecodeError):
-                pass
+                s = cand_normalized
+                start_idx = 0
 
     return _JsonRepairMachine(s[start_idx:]).repair()
 

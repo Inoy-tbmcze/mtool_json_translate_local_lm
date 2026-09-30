@@ -136,6 +136,36 @@ class TestJsonRepair(unittest.TestCase):
         self.assertEqual(data["101"], "【勇者の剣】を手に入れた！")
         self.assertEqual(data["102"], "魔王：「覚悟しろ……！」")
 
+    def test_repair_trailing_backslash_before_newline(self) -> None:
+        """Trailing backslashes before newlines are normalized into valid JSON escapes."""
+        raw = '{"8": "Yes, repair is complete!\\\nMy costs are fair~~"}'
+        repaired = repair_json_string(raw)
+        data = fast_json_loads(repaired)
+        self.assertEqual(data["8"], "Yes, repair is complete!\nMy costs are fair~~")
+
+    def test_repair_double_quoted_keys(self) -> None:
+        """Accidental double quotes on numeric keys are normalized."""
+        raw = '{"1": "Well - Underwater", ""2": "Well - Above Water", ""3": "Dead Wasteland"}'
+        repaired = repair_json_string(raw)
+        data = fast_json_loads(repaired)
+        self.assertEqual(data["2"], "Well - Above Water")
+        self.assertEqual(data["3"], "Dead Wasteland")
+
+    def test_repair_unquoted_opening_key(self) -> None:
+        """Numeric keys missing an opening quote are restored."""
+        raw = '{"2": "Pink Bikini",3": "Bottom"}'
+        repaired = repair_json_string(raw)
+        data = fast_json_loads(repaired)
+        self.assertEqual(data["3"], "Bottom")
+
+    def test_repair_colon_digit_suffix(self) -> None:
+        """RPG maker colon-digit suffixes closed prematurely are repaired cleanly."""
+        raw = '{"14": "No more!":69, "15": "I don\'t know!"}'
+        repaired = repair_json_string(raw)
+        data = fast_json_loads(repaired)
+        self.assertEqual(data["14"], "No more!")
+        self.assertEqual(data["15"], "I don't know!")
+
 
 class TestParseLlmJsonResponse(unittest.TestCase):
     """Verifies parse_llm_json_response behavior and error cases."""
