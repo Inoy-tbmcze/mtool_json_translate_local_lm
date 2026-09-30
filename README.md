@@ -12,14 +12,15 @@ The core pipeline is tuned for maximum throughput and minimal memory overhead:
 - **Fast-Rejection Text Processing**: Zero-allocation substring short-circuit checks skipping string mutation for >95% of standard game lines.
 - **SIMD JSON Serialization**: Native C/Rust accelerated JSON serialization and deserialization via `orjson`.
 - **Low-Latency Network Socket Tuning**: Persistent HTTP connection pools with `TCP_NODELAY` (Nagle's algorithm disabled) to eliminate packet buffering latency on loopback (`127.0.0.1`) local LLM calls.
+- **Automated Model Lifecycle Management**: Native LM Studio REST manager detects server availability, dynamically unloads inactive models, and loads required models with stage-specific hardware parameters (`context_length`, `eval_batch_size`, `parallel`, `flash_attention`, `offload_kv_cache_to_gpu`). Gracefully falls back for mock or third-party OpenAI-compatible endpoints.
 
 ## Requirements
 
 - Python 3.10 or newer (Windows AMD64 recommended for native machine code kernels)
 - Local LLM server running at `http://127.0.0.1:1234` (LM Studio or OpenAI-compatible)
-- Suggested models:
-  - `gemma-4-e4b` for text cleaning and translation audit
-  - `google/gemma-4-12b-qat` for translation
+- Default models:
+  - `gemma-4-e4b-uncensored-hauhaucs-aggressive` for text cleaning (`cleanup`) and translation audit (`validation`)
+  - `gemma4-12b-qat-uncensored-hauhaucs-balanced` for translation blueprint generation (`summary`) and batch translation (`translation`)
 
 ## Setup
 
@@ -81,6 +82,18 @@ Outputs:
 - `data/processed/<name>_validated.json` (passed translations)
 - `data/processed/<name>_retranslate.json` (failed lines reset to Japanese for second pass)
 
+## Testing & Verification
+
+Deterministic offline test harness and unit test suites:
+
+```powershell
+# Run deterministic pipeline performance and accuracy harness
+python tests/test_pipeline_harness.py --json
+
+# Run unit test suite
+python -m unittest discover tests
+```
+
 ## Development & Static Code Analysis
 
 The codebase enforces strict static analysis standards:
@@ -98,4 +111,16 @@ The codebase enforces strict static analysis standards:
 
 ## Configuration
 
-Settings for API endpoints, models, token limits, batch sizes, and worker thread counts live in `config.json`.
+Pipeline settings are configured modularly in `config.json` with separate blocks for `cleanup`, `summary`, `translation`, and `validation`.
+
+### Modular Sections
+- **`cleanup`**: Stage 1 & 2 pre-processing, heuristic Japanese character ratios, regex filters, and LLM dev-junk classification. Uses `gemma-4-e4b-uncensored-hauhaucs-aggressive`.
+- **`summary`**: Extraction of character personas, tone, and setting blueprint from raw dialogue. Uses `gemma4-12b-qat-uncensored-hauhaucs-balanced`.
+- **`translation`**: Main batch translation engine with token-aware chunking and dictionary pre-translation. Uses `gemma4-12b-qat-uncensored-hauhaucs-balanced`.
+- **`validation`**: Stage 3 semantic verification auditing target English against Japanese source text. Uses `gemma-4-e4b-uncensored-hauhaucs-aggressive`.
+
+### Configurable Parameters
+Each stage section supports independent configuration for:
+- **Sampling Parameters**: `temperature`, `max_tokens`, `top_p`, `top_k`, `min_p`, `repeat_penalty`, `presence_penalty`, `frequency_penalty`.
+- **Hardware & Model Load Parameters**: `context_length`, `eval_batch_size`, `physical_batch_size`, `parallel`, `flash_attention`, `offload_kv_cache_to_gpu`, `context_checkpoints`, `ttl`.
+- **Operational Parameters**: `api_endpoint`, `api_key`, `batch_size`, `max_workers`, `save_interval`, `request_timeout`.

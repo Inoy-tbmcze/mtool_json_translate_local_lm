@@ -15,6 +15,7 @@ from typing import Any
 
 from .config import load_config, resolve_input_path, resolve_output_path
 from .http_client import FastLocalHttpClient, HttpRequestError, default_client
+from .lm_studio import ensure_model_loaded
 from .utils import (
     dump_json_file,
     load_json_file,
@@ -70,8 +71,8 @@ def _send_validation_request(
     req_data = {
         "model": config["model"],
         "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.0,
-        "max_tokens": 1024,
+        "temperature": config.get("temperature", 0.0),
+        "max_tokens": config.get("max_tokens", 1024),
     }
     headers = {
         "Authorization": f"Bearer {config.get('api_key', 'lm-studio')}",
@@ -282,6 +283,8 @@ def process_validation(
     if not unprocessed_items:
         print("All items have already been validated.")
         return paths.valid, paths.retranslate
+
+    ensure_model_loaded(config, stage_name="validation")
 
     batch_size = config.get("batch_size", 20)
     batches = [

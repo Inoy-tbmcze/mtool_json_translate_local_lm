@@ -13,6 +13,7 @@ from typing import Any, Self
 
 from .config import load_config, resolve_input_path, resolve_output_path
 from .http_client import FastLocalHttpClient, HttpRequestError
+from .lm_studio import ensure_model_loaded
 from .native_core import fast_count_jp_and_ascii
 from .utils import (
     clean_japanese_text,
@@ -124,12 +125,14 @@ class TokenAwareChunker:
         return results
 
 
+# pylint: disable=too-many-instance-attributes
 class JSONTranslator:
     """Translation manager handling prompts, retries, and checkpointing."""
 
     def __init__(self, config_file: str = "config.json"):
         self.chunker = TokenAwareChunker()
         self.config = self._init_config(config_file)
+        self.summary_config = load_config(config_file, section="summary")
         self.logger = logger
         self.print_summary = True
 
@@ -264,14 +267,17 @@ class JSONTranslator:
         return pre_count
 
     def _request_blueprint_summary(self, prompt: str, item: str, log_tag: str) -> str | None:
+        model_name = self.summary_config.get("model", self.config["model"])
+        temp = self.summary_config.get("temperature", 0.0)
+        max_tok = self.summary_config.get("max_tokens", DEFAULT_MAX_TOKENS)
         data = {
-            "model": self.config["model"],
+            "model": model_name,
             "messages": [
                 {"role": "system", "content": prompt},
                 {"role": "user", "content": item},
             ],
-            "temperature": 0.0,
-            "max_tokens": DEFAULT_MAX_TOKENS,
+            "temperature": temp,
+            "max_tokens": max_tok,
         }
         try:
             resp = self.session.post(
@@ -384,8 +390,8 @@ class JSONTranslator:
                 {"role": "system", "content": prompt},
                 {"role": "user", "content": json_batch},
             ],
-            "temperature": 0.2,
-            "max_tokens": DEFAULT_MAX_TOKENS,
+            "temperature": self.config.get("temperature", 0.2),
+            "max_tokens": self.config.get("max_tokens", DEFAULT_MAX_TOKENS),
         }
 
         return self._send_translation_request(api_url, headers, data, texts, fallback_results)
@@ -503,6 +509,7 @@ class JSONTranslator:
     ) -> str:
         """Generates or loads existing Translation Blueprint for character and tone consistency."""
         if not summary_path.exists():
+            ensure_model_loaded(self.summary_config, stage_name="summaries")
             print("\n--- Generating Translation Blueprint ---")
             raw_texts = [
                 str(v)
@@ -601,6 +608,8 @@ class JSONTranslator:
             return True
 
         summary = self.generate_blueprint(original_data, summary_path, auto_confirm=auto_confirm)
+
+        ensure_model_loaded(self.config, stage_name="translation")
 
         self._translate_batches(untranslated_items, summary, translated_data, progress_path)
 

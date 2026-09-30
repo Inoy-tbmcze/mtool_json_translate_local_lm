@@ -16,6 +16,7 @@ from typing import Any
 
 from .config import load_config, resolve_input_path, resolve_output_path
 from .http_client import FastLocalHttpClient, HttpRequestError, default_client
+from .lm_studio import ensure_model_loaded
 from .native_core import fast_is_ascii_identifier
 from .utils import (
     _SENTENCE_PUNCT_RE,
@@ -238,8 +239,8 @@ def _send_classification_request(
     req_body = {
         "model": config["model"],
         "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.0,
-        "max_tokens": 512,
+        "temperature": config.get("temperature", 0.0),
+        "max_tokens": config.get("max_tokens", 512),
     }
     headers = {
         "Authorization": f"Bearer {config.get('api_key', 'lm-studio')}",
@@ -544,6 +545,7 @@ def process_json_file(
     stage2_candidates = _run_stage1_filter(raw_data, state, jp_regex, min_japanese_ratio)
 
     if stage2_candidates:
+        ensure_model_loaded(config, stage_name="cleanup")
         print(f"\n--- Stage 2: Multithreaded LLM Classification ({config['model']}) ---")
         batch_size = config.get("batch_size", 30)
         batches = [

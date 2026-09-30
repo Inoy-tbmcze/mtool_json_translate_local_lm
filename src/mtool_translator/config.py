@@ -96,6 +96,7 @@ def load_config(
             "cleanup": ("cleanup", "clean"),
             "translation": ("translation", "translate"),
             "validation": ("validation", "validate"),
+            "summary": ("summary", "summaries"),
         }
         matched_section = None
         for key in section_aliases.get(section, (section,)):
@@ -110,6 +111,8 @@ def load_config(
             "translate",
             "validation",
             "validate",
+            "summary",
+            "summaries",
         )
         if matched_section:
             config.update(matched_section)
