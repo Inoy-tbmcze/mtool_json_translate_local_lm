@@ -377,6 +377,7 @@ class FastLocalHttpClient:
         except (
             http.client.RemoteDisconnected,
             ConnectionResetError,
+            ConnectionAbortedError,
             BrokenPipeError,
             http.client.CannotSendRequest,
             http.client.ResponseNotReady,

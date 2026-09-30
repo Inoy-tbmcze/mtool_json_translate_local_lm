@@ -180,6 +180,7 @@ JP_CHAR_PATTERN = re.compile(r"[\u3040-\u30ff\u4e00-\u9faf]")
 _RE_TRAILING_COMMA = re.compile(r",\s*([}\]])")
 _BOX_GRID_RE = re.compile(r"[\u2500-\u257f\u2580-\u259f]")
 _KANA_RE = re.compile(r"[\u3040-\u30ff]")
+_COORD_ROW_RE = re.compile(r"^\s*\d+[┃│]")
 
 
 def is_box_drawing_or_grid_art(text: str) -> bool:
@@ -199,6 +200,7 @@ def is_box_drawing_or_grid_art(text: str) -> bool:
                 and ("┃" in text or "│" in text)
                 and not _SENTENCE_PUNCT_RE.search(text)
             )
+            or bool(_COORD_ROW_RE.match(text))
             or not JP_CHAR_PATTERN.search(text)
         )
         if is_grid_row:

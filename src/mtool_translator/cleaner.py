@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import sys
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -244,15 +245,27 @@ def _send_classification_request(
         "Authorization": f"Bearer {config.get('api_key', 'lm-studio')}",
     }
     requester = session or default_client
-    resp = requester.post(
-        config["api_endpoint"],
-        headers=headers,
-        json=req_body,
-        timeout=config["request_timeout"],
-    )
-    resp.raise_for_status()
-    raw_msg = resp.json()["choices"][0]["message"]["content"].strip()
-    return set(parse_json_array_safely(raw_msg))
+
+    last_err: Exception | None = None
+    for attempt in range(2):
+        try:
+            resp = requester.post(
+                config["api_endpoint"],
+                headers=headers,
+                json=req_body,
+                timeout=config["request_timeout"],
+            )
+            resp.raise_for_status()
+            raw_msg = resp.json()["choices"][0]["message"]["content"].strip()
+            return set(parse_json_array_safely(raw_msg))
+        except (HttpRequestError, ValueError, KeyError) as err:
+            last_err = err
+            if attempt == 0:
+                time.sleep(0.2)
+
+    if last_err is not None:
+        raise last_err
+    return set()
 
 
 def call_batch_classification(

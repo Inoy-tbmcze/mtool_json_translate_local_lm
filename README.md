@@ -63,7 +63,7 @@ Outputs:
 Generates a character and tone Translation Blueprint, applies common dictionary matches, and translates batches with token-aware chunking:
 
 ```powershell
-python main.py translate -i data/processed/ManualTransFile_cleaned.json
+python main.py translate -i data/processed/ManualTransFile_cleaned.json -y
 ```
 
 Outputs:
