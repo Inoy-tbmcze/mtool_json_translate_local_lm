@@ -471,6 +471,8 @@ def create_test_config(
     request_timeout: int = 10,
     batch_size: int = 15,
     max_workers: int = 2,
+    max_retries: int = 3,
+    retry_delay: float = 1.0,
 ) -> Path:
     """Generates a fully isolated config.json file in the specified directory."""
     config_data = {
@@ -493,9 +495,11 @@ def create_test_config(
             "model": model,
             "source_language": "Japanese",
             "target_language": "English",
-            "batch_size": 10,
+            "batch_size": batch_size,
             "max_workers": max_workers,
             "request_timeout": request_timeout,
+            "max_retries": max_retries,
+            "retry_delay": retry_delay,
             "enable_pre_translation": True,
             "common_translations_file": "common_translations.json",
             "progress_filename": "test_progress.json",
@@ -505,7 +509,7 @@ def create_test_config(
             "api_endpoint": api_endpoint,
             "api_key": api_key,
             "model": model,
-            "batch_size": 10,
+            "batch_size": batch_size,
             "max_workers": max_workers,
             "request_timeout": request_timeout,
         },
@@ -602,13 +606,19 @@ def run_translator_test(
     config_file: str | Path,
     input_data: dict[str, str],
     temp_dir: Path,
+    output_dir: Path | None = None,
+    input_stem: str = "stage2",
 ) -> StepMetrics:
     """Executes and benchmarks Stage 2: Translator step."""
     # Filter to Japanese entries matching translator source language expectations
     search = JP_SOURCE_REGEX.search
     valid_source = {k: v for k, v in input_data.items() if search(v)}
-    in_file = temp_dir / "stage2_in.json"
-    out_file = temp_dir / "stage2_translated.json"
+    target_out = output_dir if output_dir is not None else temp_dir
+    stem = input_stem.replace("_cleaned", "") if input_stem else "stage2"
+    in_file = temp_dir / f"{stem}_in.json"
+    out_file = target_out / f"{stem}_translated.json"
+    progress_file = target_out / f"{stem}_progress.json"
+    summary_file = target_out / f"{stem}_summary.txt"
     dump_json_file(in_file, valid_source)
     chars_total = sum(len(v) for v in valid_source.values())
 
@@ -622,8 +632,8 @@ def run_translator_test(
             input_file=str(in_file),
             output_file=str(out_file),
             auto_confirm=True,
-            progress_file=temp_dir / "test_trans_progress.json",
-            summary_file=temp_dir / "test_trans_summary.txt",
+            progress_file=progress_file,
+            summary_file=summary_file,
         )
         duration_ms = (time.perf_counter() - t_start) * 1000
         _current_mem, peak_mem = tracemalloc.get_traced_memory()
@@ -1113,6 +1123,7 @@ def execute_harness(
     input_file: str | None = None,
     output_dir: str | None = None,
     model_override: str | None = None,
+    batch_size_override: int | None = None,
 ) -> PipelineHarnessReport:
     """Executes requested test stages and generates a comprehensive performance report."""
     mock_server: PipelineMockServer | None = None
@@ -1126,11 +1137,33 @@ def execute_harness(
             endpoint = cfg.get("api_endpoint", "http://127.0.0.1:1234/v1/chat/completions")
             api_key = cfg.get("api_key", "lm-studio")
             detected_model = detect_running_lm_model(endpoint)
-            model = model_override or detected_model or cfg.get("model", "test-model")
-            clean_cfg = cfg.get("cleanup", {})
-            timeout = int(clean_cfg.get("request_timeout", 60))
-            batch_size = int(clean_cfg.get("batch_size", 30))
-            max_workers = int(clean_cfg.get("max_workers", 4))
+            configured_model = (
+                cfg.get("translation", {}).get("model")
+                if step == "translate"
+                else cfg.get("cleanup", {}).get("model")
+            ) or cfg.get("model")
+            # Ignore LM Studio model mismatch: proceed with loaded model
+            model = model_override or detected_model or configured_model or "test-model"
+            if detected_model and configured_model and detected_model != configured_model:
+                logger.info(
+                    "LM Studio model mismatch ignored: loaded '%s' != configured '%s'. Proceeding with loaded model.",
+                    detected_model,
+                    configured_model,
+                )
+            step_section = (
+                "translation"
+                if step == "translate"
+                else ("validation" if step == "validate" else "cleanup")
+            )
+            step_cfg = cfg.get(step_section, cfg.get("cleanup", {}))
+            timeout = int(step_cfg.get("request_timeout", 1200 if step == "translate" else 60))
+            batch_size = (
+                batch_size_override
+                or int(step_cfg.get("batch_size", 30))
+            )
+            max_workers = int(step_cfg.get("max_workers", 4))
+            max_retries = int(step_cfg.get("max_retries", 10 if step == "translate" else 3))
+            retry_delay = float(step_cfg.get("retry_delay", 0.1 if step == "translate" else 1.0))
             config_path = create_test_config(
                 temp_path,
                 endpoint,
@@ -1139,11 +1172,27 @@ def execute_harness(
                 request_timeout=timeout,
                 batch_size=batch_size,
                 max_workers=max_workers,
+                max_retries=max_retries,
+                retry_delay=retry_delay,
             )
         else:
             mock_server = PipelineMockServer()
             mock_server.start()
-            config_path = create_test_config(temp_path, mock_server.api_endpoint)
+            config_path = create_test_config(
+                temp_path,
+                mock_server.api_endpoint,
+                batch_size=batch_size_override or 15,
+            )
+
+        if not input_file and step == "translate":
+            processed_dir = _PROJECT_ROOT / "data" / "processed"
+            cleaned_candidates = sorted(
+                processed_dir.glob("*_cleaned.json"),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )
+            if cleaned_candidates:
+                input_file = str(cleaned_candidates[0])
 
         if input_file:
             resolved_in = resolve_input_path(input_file, default_subfolder="raw")
@@ -1153,6 +1202,9 @@ def execute_harness(
             dataset = loaded_data
         else:
             dataset = generate_harness_dataset(size=num_items)
+
+        if not output_dir and live:
+            output_dir = str(_PROJECT_ROOT / "data" / "processed")
 
         out_path = Path(output_dir) if output_dir else None
         if out_path:
@@ -1176,7 +1228,13 @@ def execute_harness(
                     **({"input_stem": input_stem} if input_stem else {}),
                 )
             elif st == "translate":
-                res = run_translator_test(config_path, dataset, temp_path)
+                res = run_translator_test(
+                    config_path,
+                    dataset,
+                    temp_path,
+                    output_dir=out_path,
+                    **({"input_stem": input_stem} if input_stem else {}),
+                )
             elif st == "validate":
                 search = JP_SOURCE_REGEX.search
                 dialogues = {k: v for k, v in dataset.items() if search(v)}
@@ -1254,6 +1312,12 @@ def main() -> None:
         help="Explicit model name override for live mode",
     )
     parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=None,
+        help="Batch size override for LLM translation or cleanup",
+    )
+    parser.add_argument(
         "--num-items",
         type=int,
         default=25,
@@ -1281,6 +1345,7 @@ def main() -> None:
             input_file=args.input_file,
             output_dir=args.output_dir,
             model_override=args.model,
+            batch_size_override=args.batch_size,
         )
 
     if args.report_file:
