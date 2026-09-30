@@ -178,11 +178,42 @@ _CODE_CHARS = frozenset(r"/\\}{}=<>")
 
 JP_CHAR_PATTERN = re.compile(r"[\u3040-\u30ff\u4e00-\u9faf]")
 _RE_TRAILING_COMMA = re.compile(r",\s*([}\]])")
+_BOX_GRID_RE = re.compile(r"[\u2500-\u257f\u2580-\u259f]")
+_KANA_RE = re.compile(r"[\u3040-\u30ff]")
+
+
+def is_box_drawing_or_grid_art(text: str) -> bool:
+    """Detects ASCII/Unicode box-drawing maps, grid art, and dungeon coordinate diagrams."""
+    if not text or not _BOX_GRID_RE.search(text):
+        return False
+
+    box_count = len(_BOX_GRID_RE.findall(text))
+    kana_count = len(_KANA_RE.findall(text))
+
+    if kana_count == 0:
+        is_grid_row = (
+            box_count >= 3
+            or ("\n" in text and box_count >= 2)
+            or (
+                box_count == 2
+                and ("┃" in text or "│" in text)
+                and not _SENTENCE_PUNCT_RE.search(text)
+            )
+            or not JP_CHAR_PATTERN.search(text)
+        )
+        if is_grid_row:
+            return True
+
+    return box_count >= 10 and box_count > 2 * kana_count
 
 
 def is_protected_sentence(text: str) -> bool:
     """Returns True if text contains full Japanese sentence or dialogue punctuation."""
-    return bool(text) and bool(_SENTENCE_PUNCT_RE.search(text))
+    if not text or not JP_CHAR_PATTERN.search(text):
+        return False
+    if is_box_drawing_or_grid_art(text):
+        return False
+    return bool(_SENTENCE_PUNCT_RE.search(text))
 
 
 def is_protected_short_ui_label(text: str) -> bool:
@@ -277,7 +308,7 @@ def has_japanese_characters(text: str, jp_regex: re.Pattern) -> bool:
     return bool(text) and bool(jp_regex.search(text))
 
 
-def is_ascii_art_or_symbol_heavy(text: str, jp_regex: re.Pattern) -> bool:
+def is_ascii_art_or_symbol_heavy(text: str, _jp_regex: re.Pattern) -> bool:
     """Detects ASCII art or symbol-heavy lines using low-level symbol counting."""
     if not text:
         return False
@@ -286,7 +317,7 @@ def is_ascii_art_or_symbol_heavy(text: str, jp_regex: re.Pattern) -> bool:
         symbol_count = fast_count_symbols(text)
         if (symbol_count / n) > 0.5:
             return True
-    return bool(fast_has_repeated_chars(text, min_repeat=5) and not jp_regex.search(text))
+    return bool(fast_has_repeated_chars(text, min_repeat=5) and not JP_CHAR_PATTERN.search(text))
 
 
 def clean_japanese_text(text: str) -> str:

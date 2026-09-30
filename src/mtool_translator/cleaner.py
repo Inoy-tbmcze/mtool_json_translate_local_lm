@@ -29,6 +29,7 @@ from .utils import (
     dump_json_file,
     has_japanese_characters,
     is_ascii_art_or_symbol_heavy,
+    is_box_drawing_or_grid_art,
     is_protected_game_item,
     is_protected_katakana_word,
     is_protected_sentence,
@@ -173,6 +174,9 @@ def _is_content_junk(
     )
     if not has_japanese_characters(c_text, jp_regex):
         return "non_japanese_text"
+
+    if is_box_drawing_or_grid_art(c_text):
+        return "box_drawing_or_grid_art"
 
     if is_ascii_art_or_symbol_heavy(c_text, jp_regex):
         return "ascii_art_or_symbol_heavy"
@@ -368,6 +372,8 @@ def _load_existing_progress(paths: CleanerPaths) -> CleanerState:
 
 def _is_protected_entry(text: str, stripped: str) -> bool:
     """Checks whether original or stripped text qualifies as protected game text."""
+    if is_box_drawing_or_grid_art(text) or is_box_drawing_or_grid_art(stripped):
+        return False
     if is_protected_sentence(text):
         return True
     if stripped is not text and is_protected_sentence(stripped):
