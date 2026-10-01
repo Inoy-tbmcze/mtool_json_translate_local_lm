@@ -19,6 +19,7 @@ from .utils import (
     clean_japanese_text,
     dump_json_file,
     fast_json_dumps,
+    is_translatable_text,
     load_json_file,
     parse_llm_json_response,
 )
@@ -364,7 +365,7 @@ class JSONTranslator:
             return {}
 
         cleaned_dict = {
-            str(i + 1): clean_japanese_text(value) for i, (_k, value) in enumerate(texts)
+            f"k_{i + 1:02d}": clean_japanese_text(value) for i, (_k, value) in enumerate(texts)
         }
         json_batch = fast_json_dumps(cleaned_dict, indent=False)
 
@@ -380,7 +381,7 @@ class JSONTranslator:
             f"2. Follow character names, gender, and tone from the TRANSLATION BLUEPRINT.\n"
             f"3. Keep technical terms, code, and control characters (\\n, \\t) unchanged.\n"
             f"4. Output raw JSON only. Do not use Markdown code blocks. Do not add explanations.\n"
-            f"5. Maintain exact 1-to-1 key mapping: each numeric key (1 to {len(texts)}) "
+            f"5. Maintain exact 1-to-1 key mapping: each key (k_01 to k_{len(texts):02d}) "
             f"must be present. Never combine or omit keys even for fragmented sentences."
         )
 
@@ -452,23 +453,108 @@ class JSONTranslator:
         self.logger.error("Max retries exhausted for batch. Returning fallbacks.")
         return fallback_results
 
+    @staticmethod
+    def _extract_translated_item(index: int, cleaned_json: dict[str, Any]) -> Any | None:
+        key_candidates = (
+            f"k_{index + 1:02d}",
+            str(index + 1),
+            f"{index + 1:02d}",
+            f"k_{index + 1}",
+        )
+        for cand in key_candidates:
+            if cand in cleaned_json and cleaned_json[cand] is not None:
+                return cleaned_json[cand]
+        return None
+
+    def _translate_single_item(self, text_tuple: tuple[str, str]) -> str:
+        headers, api_url = self._get_api_headers_and_url()
+        prompt = (
+            f"You are a translation engine.\n"
+            f"Translate the single JSON string value from "
+            f"{self.config.get('source_language', 'Japanese')} to "
+            f"{self.config.get('target_language', 'English')}.\n"
+            f"Maintain technical terms and control characters (\\n, \\t) unchanged.\n"
+            f"Output raw JSON only: {{\"item\": \"<translated text>\"}}."
+        )
+        payload = fast_json_dumps({"item": clean_japanese_text(text_tuple[1])})
+        data = {
+            "model": self.config["model"],
+            "messages": [
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": payload},
+            ],
+            "temperature": 0.1,
+            "max_tokens": 512,
+        }
+        try:
+            resp = self.session.post(
+                api_url,
+                headers=headers,
+                json=data,
+                timeout=self.config["request_timeout"],
+            )
+            if resp.status_code == 200:
+                choices = resp.json().get("choices", [])
+                if choices:
+                    content = choices[0]["message"]["content"].strip()
+                    parsed = parse_llm_json_response(content)
+                    if isinstance(parsed, dict) and parsed:
+                        trans = str(parsed.get("item", next(iter(parsed.values())))).strip()
+                        if self.is_valid_translation(trans):
+                            return trans
+        except (HttpRequestError, ValueError, KeyError) as err:
+            self.logger.warning(
+                "Single item recovery failed for '%s': %s", text_tuple[1][:30], err
+            )
+
+        return text_tuple[1]
+
+    def _recover_boundary_items(
+        self,
+        texts: list[tuple[str, str]],
+        results: dict[str, str],
+        missing_indices: list[int],
+    ) -> None:
+        target_indices: set[int] = set(missing_indices)
+        for idx in missing_indices:
+            if idx > 0 and is_translatable_text(texts[idx - 1][1]):
+                target_indices.add(idx - 1)
+
+        self.logger.info(
+            "Recovering %d boundary item(s) in isolation to prevent duplication.",
+            len(target_indices),
+        )
+        for idx in sorted(target_indices):
+            key = texts[idx][0]
+            recovered = self._translate_single_item(texts[idx])
+            if recovered and self.is_valid_translation(recovered):
+                results[key] = recovered
+
     def _map_translation_response(
         self, texts: list[tuple[str, str]], translated_json: dict[str, Any]
     ) -> dict[str, str]:
         translated_results: dict[str, str] = {}
         cleaned_json = {str(k).strip("\"' \t"): v for k, v in translated_json.items()}
+        missing_indices: list[int] = []
+
         for i, (key, original_value) in enumerate(texts):
-            lookup_key = str(i + 1)
-            if lookup_key in cleaned_json and cleaned_json[lookup_key] is not None:
-                translated_line = str(cleaned_json[lookup_key]).strip()
+            raw_val = self._extract_translated_item(i, cleaned_json)
+            if raw_val is not None:
+                translated_line = str(raw_val).strip()
                 if self.is_valid_translation(translated_line):
                     translated_results[key] = translated_line
-                else:
-                    translated_results[key] = original_value
-                    self.logger.warning("Validation failed for key '%s'.", key)
+                    continue
+                self.logger.warning("Validation failed for key '%s'.", key)
             else:
-                translated_results[key] = original_value
-                self.logger.warning("Key '%s' missing from response.", lookup_key)
+                self.logger.warning("Key 'k_%02d' missing from response.", i + 1)
+
+            translated_results[key] = original_value
+            if is_translatable_text(original_value):
+                missing_indices.append(i)
+
+        if missing_indices:
+            self._recover_boundary_items(texts, translated_results, missing_indices)
+
         return translated_results
 
     def is_valid_translation(self, translation: str) -> bool:

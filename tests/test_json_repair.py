@@ -320,5 +320,70 @@ class TestTranslatorTemperatureJitter(unittest.TestCase):
         self.assertEqual(res, {"orig_1": "translated"})
 
 
+class TestKeySchemaAndBoundaryRecovery(unittest.TestCase):
+    """Tests non-sequential key mapping, translatable text filtering, and boundary recovery."""
+
+    def test_is_translatable_text(self) -> None:
+        from mtool_translator.utils import is_translatable_text
+
+        self.assertFalse(is_translatable_text("・"))
+        self.assertFalse(is_translatable_text("・Fixed error"))
+        self.assertFalse(is_translatable_text("------"))
+        self.assertFalse(is_translatable_text("   "))
+        self.assertTrue(is_translatable_text("「さて、"))
+        self.assertTrue(is_translatable_text("。早速なんだけど……」"))
+        self.assertTrue(is_translatable_text("こんにちは"))
+
+    def test_extract_translated_item_variants(self) -> None:
+        from mtool_translator.translator import JSONTranslator
+
+        self.assertEqual(JSONTranslator._extract_translated_item(0, {"k_01": "Hello"}), "Hello")
+        self.assertEqual(JSONTranslator._extract_translated_item(0, {"1": "Hello"}), "Hello")
+        self.assertEqual(JSONTranslator._extract_translated_item(0, {"01": "Hello"}), "Hello")
+        self.assertEqual(JSONTranslator._extract_translated_item(0, {"k_1": "Hello"}), "Hello")
+        self.assertIsNone(JSONTranslator._extract_translated_item(0, {"k_02": "Hello"}))
+
+    def test_missing_colon_key_repair(self) -> None:
+        from mtool_translator.utils import repair_json_string
+
+        malformed = '{"k_01Hello", "k_02": "World"}'
+        repaired = repair_json_string(malformed)
+        self.assertIn('"k_01": "Hello"', repaired)
+
+    def test_boundary_recovery_retranslates_predecessor_and_missing(self) -> None:
+        from mtool_translator.translator import JSONTranslator
+
+        translator = JSONTranslator("config.json")
+        retranslated: list[str] = []
+
+        def mock_translate_single(text_tuple: tuple[str, str]) -> str:
+            retranslated.append(text_tuple[0])
+            return f"Recovered {text_tuple[0]}"
+
+        translator._translate_single_item = mock_translate_single  # type: ignore[method-assign]
+
+        texts = [
+            ("k5", "「…………（どきどき）」"),
+            ("k6", "「さて、"),
+            ("k7", "。早速なんだけど……」"),
+            ("k8", "「な、なんですか？」"),
+        ]
+        # Simulate LLM merged k6 and k7 into k_02, omitting k_03
+        llm_response = {
+            "k_01": "...Heart pounding...",
+            "k_02": "Well, without further ado...",
+            "k_04": "Wh-what is it?",
+        }
+
+        res = translator._map_translation_response(texts, llm_response)
+        # Both predecessor (k6 at index 1) and missing line (k7 at index 2) must be retranslated
+        self.assertIn("k6", retranslated)
+        self.assertIn("k7", retranslated)
+        self.assertEqual(res["k6"], "Recovered k6")
+        self.assertEqual(res["k7"], "Recovered k7")
+        self.assertEqual(res["k5"], "...Heart pounding...")
+        self.assertEqual(res["k8"], "Wh-what is it?")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -181,8 +181,9 @@ _RE_TRAILING_COMMA = re.compile(r",\s*([}\]])")
 _RE_DOUBLE_QUOTE_KEY = re.compile(r'([,{]\s*)""(\d+)"\s*:')
 _RE_UNQUOTED_KEY_OPEN = re.compile(r'([,{]\s*)(\d+)"\s*:')
 _RE_COLON_DIGIT_SUFFIX = re.compile(r'(":\s*"[^"]*"):\d+(\s*[,}])')
-_RE_MISSING_COLON_DIGIT_KEY = re.compile(r'([,{]\s*)"(\d+)([a-zA-Z].*?)"(\s*[,}])')
+_RE_MISSING_COLON_DIGIT_KEY = re.compile(r'([,{]\s*)"(k_\d+|\d+)([a-zA-Z].*?)"(\s*[,}])')
 _RE_KV_FALLBACK = re.compile(r'"([^"\\]+)"\s*:\s*"((?:[^"\\]|\\.)*)"')
+_NON_TRANSLATABLE_RE = re.compile(r'''^[\s\u30fb\-_–—#*+=/\\|<>:;,.?!~"'()\[\]{}]+$''')
 _BOX_GRID_RE = re.compile(r"[\u2500-\u257f\u2580-\u259f]")
 _KANA_RE = re.compile(r"[\u3040-\u30ff]")
 _COORD_ROW_RE = re.compile(r"^\s*\d+[┃│]")
@@ -212,6 +213,18 @@ def is_box_drawing_or_grid_art(text: str) -> bool:
             return True
 
     return box_count >= 10 and box_count > 2 * kana_count
+
+
+_JP_TRANSLATABLE_PATTERN = re.compile(r"[\u3041-\u3096\u30a1-\u30fa\u4e00-\u9faf]")
+
+
+def is_translatable_text(text: str) -> bool:
+    """Returns True if text contains translatable Japanese characters beyond isolated symbols."""
+    if not text or not text.strip():
+        return False
+    if _NON_TRANSLATABLE_RE.match(text):
+        return False
+    return bool(_JP_TRANSLATABLE_PATTERN.search(text))
 
 
 def is_protected_sentence(text: str) -> bool:
