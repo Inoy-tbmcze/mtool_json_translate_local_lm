@@ -181,6 +181,8 @@ _RE_TRAILING_COMMA = re.compile(r",\s*([}\]])")
 _RE_DOUBLE_QUOTE_KEY = re.compile(r'([,{]\s*)""(\d+)"\s*:')
 _RE_UNQUOTED_KEY_OPEN = re.compile(r'([,{]\s*)(\d+)"\s*:')
 _RE_COLON_DIGIT_SUFFIX = re.compile(r'(":\s*"[^"]*"):\d+(\s*[,}])')
+_RE_MISSING_COLON_DIGIT_KEY = re.compile(r'([,{]\s*)"(\d+)([a-zA-Z].*?)"(\s*[,}])')
+_RE_KV_FALLBACK = re.compile(r'"([^"\\]+)"\s*:\s*"((?:[^"\\]|\\.)*)"')
 _BOX_GRID_RE = re.compile(r"[\u2500-\u257f\u2580-\u259f]")
 _KANA_RE = re.compile(r"[\u3040-\u30ff]")
 _COORD_ROW_RE = re.compile(r"^\s*\d+[┃│]")
@@ -623,6 +625,9 @@ def repair_json_string(raw: str) -> str:
             cand_normalized = _RE_DOUBLE_QUOTE_KEY.sub(r'\1"\2":', candidate)
             cand_normalized = _RE_UNQUOTED_KEY_OPEN.sub(r'\1"\2":', cand_normalized)
             cand_normalized = _RE_COLON_DIGIT_SUFFIX.sub(r"\1\2", cand_normalized)
+            cand_normalized = _RE_MISSING_COLON_DIGIT_KEY.sub(
+                r'\1"\2": "\3"\4', cand_normalized
+            )
             cand_no_comma = _RE_TRAILING_COMMA.sub(r"\1", cand_normalized)
             try:
                 fast_json_loads(cand_no_comma)
@@ -632,6 +637,28 @@ def repair_json_string(raw: str) -> str:
                 start_idx = 0
 
     return _JsonRepairMachine(s[start_idx:]).repair()
+
+
+def _extract_kv_regex_fallback(text: str) -> dict[str, str]:
+    """Recovers key-value pairs from malformed JSON responses using regex."""
+    if not text:
+        return {}
+    results: dict[str, str] = {}
+    for match in _RE_KV_FALLBACK.finditer(text):
+        key = match.group(1).strip()
+        val_raw = match.group(2)
+        try:
+            val = fast_json_loads(f'"{val_raw}"')
+        except (ValueError, TypeError, json.JSONDecodeError):
+            val = (
+                val_raw.replace('\\"', '"')
+                .replace("\\n", "\n")
+                .replace("\\r", "\r")
+                .replace("\\t", "\t")
+                .replace("\\\\", "\\")
+            )
+        results[key] = str(val)
+    return results
 
 
 def parse_llm_json_response(response_text: str) -> dict:
@@ -653,10 +680,14 @@ def parse_llm_json_response(response_text: str) -> dict:
         parsed = fast_json_loads(repaired_json_str)
         if isinstance(parsed, dict):
             return parsed
-    except (ValueError, TypeError, json.JSONDecodeError) as err:
-        raise ValueError("Failed to repair JSON output.") from err
+    except (ValueError, TypeError, json.JSONDecodeError):
+        pass
 
-    raise ValueError("Parsed output is not a dictionary.")
+    regex_parsed = _extract_kv_regex_fallback(raw)
+    if regex_parsed:
+        return regex_parsed
+
+    raise ValueError("Failed to repair JSON output.")
 
 
 def parse_json_array_safely(content: str) -> list:

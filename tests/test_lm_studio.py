@@ -142,6 +142,28 @@ class TestLMStudio(unittest.TestCase):
         result = ensure_model_loaded(config, stage_name="cleaning")
         self.assertFalse(result)
 
+    @patch("mtool_translator.lm_studio.load_model")
+    @patch("mtool_translator.lm_studio.unload_all_models")
+    @patch("mtool_translator.lm_studio.is_lm_studio_available")
+    def test_ensure_model_loaded_failure_raises(
+        self,
+        mock_avail: MagicMock,
+        mock_unload: MagicMock,
+        mock_load: MagicMock,
+    ) -> None:
+        """Verifies RuntimeError is raised if load_model fails when server is available."""
+        mock_avail.return_value = True
+        mock_unload.return_value = 1
+        mock_load.return_value = False
+
+        config = {
+            "api_endpoint": "http://127.0.0.1:1234/v1/chat/completions",
+            "model": "gemma-4-e4b-uncensored-hauhaucs-aggressive",
+        }
+        with self.assertRaises(RuntimeError) as ctx:
+            ensure_model_loaded(config, stage_name="cleaning")
+        self.assertIn("Failed to load required model", str(ctx.exception))
+
 
 if __name__ == "__main__":
     unittest.main()

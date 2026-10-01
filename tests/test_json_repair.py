@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unittest
+from typing import Any
 
 from mtool_translator.native_core import NATIVE_MANAGER, fast_find_json_bounds
 from mtool_translator.utils import (
@@ -191,6 +192,37 @@ class TestParseLlmJsonResponse(unittest.TestCase):
         with self.assertRaises(ValueError):
             parse_llm_json_response("No JSON here")
 
+    def test_missing_colon_digit_key_repair(self) -> None:
+        """Repairs keys where opening quote and colon are missing between digits and value."""
+        raw = '{"13": "Mining", "14Atl. Gratitude", "15": "Done"}'
+        res = parse_llm_json_response(raw)
+        self.assertEqual(res.get("14"), "Atl. Gratitude")
+
+    def test_parse_llm_json_response_recovers_wave47_malformed_batch(self) -> None:
+        """Recovers 25/25 keys from Wave 47 Batch 2 comma-split value."""
+        raw = (
+            '{"1":"A","2":"B","3":"C","4":"D","5":"E","6":"F","7":"G","8":"H",'
+            '"9":"I","10":"J","11":"K","12":"L","13":"M","14":"N","15":"O","16":"P",'
+            '"17":"Q","18":"R","19":"S","20":"T","21":"U","22":"V","23":"W","24":"X",'
+            '"25":"Deleting \\"○○○.\\",\\"sd\\" is sufficient."}'
+        )
+        res = parse_llm_json_response(raw)
+        self.assertEqual(len(res), 25)
+        self.assertIn("Deleting", res["25"])
+
+    def test_parse_llm_json_response_recovers_wave49_malformed_batch(self) -> None:
+        """Recovers 25/25 keys from Wave 49 Batch 1 missing colon on line 14."""
+        raw = (
+            '{"1":"A","2":"B","3":"C","4":"D","5":"E","6":"F","7":"G","8":"H",'
+            '"9":"I","10":"J","11":"K","12":"L","13":"M",'
+            '"14Atl. Since we owe you a debt of gratitude,",'
+            '"15":"O","16":"P","17":"Q","18":"R","19":"S","20":"T","21":"U","22":"V",'
+            '"23":"W","24":"X","25":"Y"}'
+        )
+        res = parse_llm_json_response(raw)
+        self.assertEqual(len(res), 25)
+        self.assertEqual(res["14"], "Atl. Since we owe you a debt of gratitude,")
+
 
 class TestParseJsonArraySafely(unittest.TestCase):
     """Verifies parse_json_array_safely array extraction and repair."""
@@ -237,6 +269,55 @@ class TestNativeJsonBounds(unittest.TestCase):
     def test_native_manager_availability(self) -> None:
         """Asserts native manager is active on Windows x64."""
         self.assertTrue(NATIVE_MANAGER.is_available)
+
+
+class TestTranslatorTemperatureJitter(unittest.TestCase):
+    """Verifies temperature jitter escalation on retry attempts in JSONTranslator."""
+
+    def test_temperature_escalation_on_retries(self) -> None:
+        """Asserts attempt 0 uses base temp (0.05), attempt 1 uses 0.1, attempt 2 uses 0.2."""
+        from unittest.mock import MagicMock
+        from mtool_translator.translator import JSONTranslator
+
+        translator = JSONTranslator.__new__(JSONTranslator)
+        translator.config = {
+            "max_retries": 3,
+            "retry_delay": 0.001,
+            "request_timeout": 1,
+            "temperature": 0.05,
+        }
+        translator.logger = MagicMock()
+        translator.session = MagicMock()
+
+        captured_temps: list[float] = []
+
+        def fake_post(*_args: Any, **kwargs: Any) -> MagicMock:
+            json_payload = kwargs.get("json", {})
+            captured_temps.append(json_payload.get("temperature"))
+            resp = MagicMock()
+            if len(captured_temps) < 3:
+                resp.status_code = 500
+                resp.text = "Internal Server Error"
+            else:
+                resp.status_code = 200
+                resp.json.return_value = {
+                    "choices": [{"message": {"content": '{"1": "translated"}'}}]
+                }
+            return resp
+
+        translator.session.post.side_effect = fake_post
+        translator.is_valid_translation = MagicMock(return_value=True)
+
+        res = translator._send_translation_request(
+            api_url="http://test/v1/chat/completions",
+            headers={},
+            data={"model": "test-model"},
+            texts=[("orig_1", "orig_1")],
+            fallback_results={"orig_1": "orig_1"},
+        )
+
+        self.assertEqual(captured_temps, [0.05, 0.1, 0.2])
+        self.assertEqual(res, {"orig_1": "translated"})
 
 
 if __name__ == "__main__":

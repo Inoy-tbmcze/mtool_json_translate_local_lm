@@ -379,7 +379,9 @@ class JSONTranslator:
             f"1. Translate JSON values only. Keep keys unchanged.\n"
             f"2. Follow character names, gender, and tone from the TRANSLATION BLUEPRINT.\n"
             f"3. Keep technical terms, code, and control characters (\\n, \\t) unchanged.\n"
-            f"4. Output raw JSON only. Do not use Markdown code blocks. Do not add explanations."
+            f"4. Output raw JSON only. Do not use Markdown code blocks. Do not add explanations.\n"
+            f"5. Maintain exact 1-to-1 key mapping: each numeric key (1 to {len(texts)}) "
+            f"must be present. Never combine or omit keys even for fragmented sentences."
         )
 
         if self.print_summary:
@@ -393,13 +395,19 @@ class JSONTranslator:
                 {"role": "system", "content": prompt},
                 {"role": "user", "content": json_batch},
             ],
-            "temperature": self.config.get("temperature", 0.2),
+            "temperature": self.config.get("temperature", 0.05),
             "max_tokens": self.config.get("max_tokens", DEFAULT_MAX_TOKENS),
         }
         if self.config.get("reasoning_effort"):
             data["reasoning_effort"] = self.config["reasoning_effort"]
 
         return self._send_translation_request(api_url, headers, data, texts, fallback_results)
+
+    def _get_retry_temperature(self, attempt: int) -> float:
+        if attempt == 0:
+            temp = float(self.config.get("temperature", 0.05))
+            return 0.05 if temp <= 0.0 else temp
+        return 0.1 if attempt == 1 else 0.2
 
     def _send_translation_request(
         self,
@@ -410,6 +418,7 @@ class JSONTranslator:
         fallback_results: dict[str, str],
     ) -> dict[str, str]:
         for attempt in range(self.config["max_retries"]):
+            data["temperature"] = self._get_retry_temperature(attempt)
             try:
                 resp = self.session.post(
                     api_url,

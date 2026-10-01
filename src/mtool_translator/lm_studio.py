@@ -23,7 +23,6 @@ LOAD_CONFIG_KEYS: tuple[str, ...] = (
     "speculative_draft_max_tokens",
     "speculative_draft_min_tokens",
     "speculative_draft_min_continue_probability",
-    "ttl",
 )
 
 
@@ -111,6 +110,33 @@ def load_model(
             if k in config:
                 payload[k] = config[k]
 
+    # LM Studio requires that when parallel slots are allocated, context_length is the aggregate
+    # across all slots. Guarantee at least 4096 tokens per slot if parallel > 1.
+    parallel_slots = payload.get("parallel", 1)
+    if parallel_slots > 1 and "context_length" in payload:
+        min_aggregate = 4096 * parallel_slots
+        if payload["context_length"] < min_aggregate:
+            logger.info(
+                "[LM Studio] Scaling context_length from %d to %d for %d parallel slots "
+                "(4096/slot)",
+                payload["context_length"],
+                min_aggregate,
+                parallel_slots,
+            )
+            payload["context_length"] = min_aggregate
+
+    # Only include speculative draft params if speculative drafting is actually configured
+    if not payload.get("speculative_draft_model"):
+        for k in (
+            "speculative_draft_model",
+            "speculative_draft_simple",
+            "speculative_draft_mtp",
+            "speculative_draft_max_tokens",
+            "speculative_draft_min_tokens",
+            "speculative_draft_min_continue_probability",
+        ):
+            payload.pop(k, None)
+
     try:
         resp = default_client.post(load_url, json=payload, timeout=timeout)
         if resp.status_code == 200:
@@ -159,4 +185,12 @@ def ensure_model_loaded(config: dict[str, Any], stage_name: str = "") -> bool:
     if unloaded > 0:
         print(f"[{stage_display}] Unloaded {unloaded} active model instance(s).")
 
-    return load_model(base_url, model_name, config)
+    success = load_model(base_url, model_name, config)
+    if not success:
+        error_msg = (
+            f"Failed to load required model '{model_name}' into LM Studio for "
+            f"{stage_display} stage."
+        )
+        logger.error(error_msg)
+        raise RuntimeError(error_msg)
+    return True
