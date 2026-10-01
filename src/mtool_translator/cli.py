@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 from .cleaner import process_json_file
+from .config import resolve_output_path
 from .translator import process_translation
 from .validator import process_validation
 
@@ -28,19 +29,20 @@ def run_pipeline(
 
     # 2. Translate
     print("\n[Step 2/3] Translating cleaned text...")
-    out_trans = None
-    progress_file = None
-    summary_file = None
+    stem = cleaned_path.stem.replace("_cleaned", "")
     if output_dir:
-        stem = cleaned_path.stem.replace("_cleaned", "")
         out_trans = Path(output_dir) / f"{stem}_translated.json"
         progress_file = Path(output_dir) / f"{stem}_progress.json"
         summary_file = Path(output_dir) / f"{stem}_summary.txt"
+    else:
+        out_trans = resolve_output_path(f"{stem}_translated.json", default_subfolder="processed")
+        progress_file = resolve_output_path(f"{stem}_progress.json", default_subfolder="processed")
+        summary_file = resolve_output_path(f"{stem}_summary.txt", default_subfolder="processed")
 
     translated_path = process_translation(
         config_file=config_file,
         input_file=str(cleaned_path),
-        output_file=str(out_trans) if out_trans else None,
+        output_file=str(out_trans),
         auto_confirm=auto_confirm,
         progress_file=progress_file,
         summary_file=summary_file,

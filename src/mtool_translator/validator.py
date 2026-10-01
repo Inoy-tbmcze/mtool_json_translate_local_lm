@@ -153,7 +153,7 @@ def _init_validation_paths(
     config: dict[str, Any], input_file: str | None, output_dir: str | None
 ) -> ValidationPaths:
     """Resolves input, output, and checkpoint paths for translation validation."""
-    input_filename = input_file or config.get("input_filename", "translated_game_text.json")
+    input_filename = input_file or config.get("input_filename", "ManualTransFile_translated.json")
     input_path = resolve_input_path(input_filename, default_subfolder="processed")
     if not input_path.exists():
         input_path = resolve_input_path(input_filename, default_subfolder="raw")

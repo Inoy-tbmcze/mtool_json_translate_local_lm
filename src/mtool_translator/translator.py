@@ -396,6 +396,8 @@ class JSONTranslator:
             "temperature": self.config.get("temperature", 0.2),
             "max_tokens": self.config.get("max_tokens", DEFAULT_MAX_TOKENS),
         }
+        if self.config.get("reasoning_effort"):
+            data["reasoning_effort"] = self.config["reasoning_effort"]
 
         return self._send_translation_request(api_url, headers, data, texts, fallback_results)
 
@@ -635,10 +637,15 @@ def process_translation(  # pylint: disable=too-many-arguments,too-many-position
         input_file or config.get("input_filename", "ManualTransFile_cleaned.json"),
         default_subfolder="processed",
     )
-    out_file = resolve_output_path(
-        output_file or config.get("output_filename", "ManualTransFile_translated.json"),
-        default_subfolder="processed",
-    )
+    if output_file:
+        out_file = resolve_output_path(output_file, default_subfolder="processed")
+    else:
+        cfg_out = config.get("output_filename")
+        if cfg_out:
+            out_file = resolve_output_path(cfg_out, default_subfolder="processed")
+        else:
+            stem = in_file.stem.replace("_cleaned", "")
+            out_file = resolve_output_path(f"{stem}_translated.json", default_subfolder="processed")
 
     with JSONTranslator(config_file=config_file) as translator:
         translator.translate_json_file(
