@@ -52,6 +52,7 @@ Desktop.ini
 # Project runtime logs, summaries, checkpoints and outputs
 *.log
 logs/
+data/
 translation.log
 summary.txt
 translation_progress.json
