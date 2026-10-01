@@ -130,9 +130,10 @@ class JSONTranslator:
     """Translation manager handling prompts, retries, and checkpointing."""
 
     def __init__(self, config_file: str = "config.json"):
-        self.chunker = TokenAwareChunker()
         self.config = self._init_config(config_file)
         self.summary_config = load_config(config_file, section="summary")
+        chunk_budget = self.summary_config.get("chunk_tokens", 16384)
+        self.chunker = TokenAwareChunker(max_tokens=chunk_budget)
         self.logger = logger
         self.print_summary = True
 
@@ -270,7 +271,7 @@ class JSONTranslator:
         model_name = self.summary_config.get("model", self.config["model"])
         temp = self.summary_config.get("temperature", 0.0)
         max_tok = self.summary_config.get("max_tokens", DEFAULT_MAX_TOKENS)
-        data = {
+        data: dict[str, Any] = {
             "model": model_name,
             "messages": [
                 {"role": "system", "content": prompt},
@@ -279,6 +280,8 @@ class JSONTranslator:
             "temperature": temp,
             "max_tokens": max_tok,
         }
+        if "reasoning_effort" in self.summary_config:
+            data["reasoning_effort"] = self.summary_config["reasoning_effort"]
         try:
             resp = self.session.post(
                 self.api_url,
