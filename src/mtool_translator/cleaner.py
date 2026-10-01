@@ -236,12 +236,17 @@ def _send_classification_request(
     prompt: str, config: dict[str, Any], session: FastLocalHttpClient | None = None
 ) -> set[Any]:
     """Sends the classification request to the LLM and extracts discarded IDs."""
-    req_body = {
+    req_body: dict[str, Any] = {
         "model": config["model"],
         "messages": [{"role": "user", "content": prompt}],
         "temperature": config.get("temperature", 0.0),
-        "max_tokens": config.get("max_tokens", 512),
+        "max_tokens": config.get("max_tokens", 128),
     }
+    if "reasoning_effort" in config:
+        req_body["reasoning_effort"] = config["reasoning_effort"]
+    elif config.get("disable_thinking", True):
+        req_body["reasoning_effort"] = "none"
+
     headers = {
         "Authorization": f"Bearer {config.get('api_key', 'lm-studio')}",
     }
@@ -258,7 +263,14 @@ def _send_classification_request(
             )
             resp.raise_for_status()
             raw_msg = resp.json()["choices"][0]["message"]["content"].strip()
-            return set(parse_json_array_safely(raw_msg))
+            raw_parsed = parse_json_array_safely(raw_msg)
+            discard_set: set[Any] = set()
+            for elem in raw_parsed:
+                if isinstance(elem, (list, tuple)):
+                    discard_set.update(elem)
+                elif isinstance(elem, (int, str)):
+                    discard_set.add(elem)
+            return discard_set
         except (HttpRequestError, ValueError, KeyError) as err:
             last_err = err
             if attempt == 0:
