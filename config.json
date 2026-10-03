@@ -36,7 +36,7 @@
     "batch_size": 50,
     "max_workers": 8,
     "save_interval": 10,
-    "request_timeout": 120
+    "request_timeout": 240
   },
   "cleanup_profiles": {
     "gemma4_12b_bis": {
@@ -110,7 +110,7 @@
     "speculative_draft_max_tokens": 3,
     "speculative_draft_min_tokens": 0,
     "speculative_draft_min_continue_probability": 0.0,
-    "request_timeout": 300
+    "request_timeout": 600
   },
   "translation": {
     "api_endpoint": "http://127.0.0.1:1234/v1/chat/completions",
@@ -128,7 +128,7 @@
     "context_length": 24576,
     "eval_batch_size": 2048,
     "physical_batch_size": 1024,
-    "parallel": 6,
+    "parallel": 4,
     "flash_attention": true,
     "offload_kv_cache_to_gpu": true,
     "kv_cache_type": "q8_0",
@@ -149,9 +149,9 @@
     "enable_pre_translation": true,
     "batch_size": 25,
     "max_retries": 3,
-    "max_workers": 6,
+    "max_workers": 4,
     "retry_delay": 0.1,
-    "request_timeout": 180,
+    "request_timeout": 380,
     "save_interval": 1,
     "api_type": "lmstudio"
   },
