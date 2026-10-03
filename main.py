@@ -12,6 +12,7 @@ if str(_SRC_DIR) not in sys.path:
 
 # pylint: disable=wrong-import-position
 from mtool_translator.cli import main
+from mtool_translator.diff import process_diff, process_merge
 from mtool_translator.translator import (
     JSONTranslator,
     TokenAwareChunker,
@@ -26,6 +27,8 @@ __all__ = [
     "clean_japanese_text",
     "main",
     "parse_llm_json_response",
+    "process_diff",
+    "process_merge",
     "process_translation",
 ]
 

@@ -94,34 +94,36 @@ DEFAULT_JP_SYMBOLS = [
     "。",
 ]
 
-FILE_EXTENSIONS = frozenset((
-    ".png",
-    ".jpg",
-    ".jpeg",
-    ".bmp",
-    ".tga",
-    ".webp",
-    ".wav",
-    ".mp3",
-    ".ogg",
-    ".flac",
-    ".webm",
-    ".mp4",
-    ".ogv",
-    ".avi",
-    ".bik",
-    ".bk2",
-    ".cpp",
-    ".h",
-    ".cs",
-    ".py",
-    ".json",
-    ".xml",
-    ".asset",
-    ".mat",
-    ".prefab",
-    ".txt",
-))
+FILE_EXTENSIONS = frozenset(
+    (
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".bmp",
+        ".tga",
+        ".webp",
+        ".wav",
+        ".mp3",
+        ".ogg",
+        ".flac",
+        ".webm",
+        ".mp4",
+        ".ogv",
+        ".avi",
+        ".bik",
+        ".bk2",
+        ".cpp",
+        ".h",
+        ".cs",
+        ".py",
+        ".json",
+        ".xml",
+        ".asset",
+        ".mat",
+        ".prefab",
+        ".txt",
+    )
+)
 
 FILE_EXTENSIONS_SET = FILE_EXTENSIONS  # Backward compatibility alias
 
@@ -183,7 +185,7 @@ _RE_UNQUOTED_KEY_OPEN = re.compile(r'([,{]\s*)(\d+)"\s*:')
 _RE_COLON_DIGIT_SUFFIX = re.compile(r'(":\s*"[^"]*"):\d+(\s*[,}])')
 _RE_MISSING_COLON_DIGIT_KEY = re.compile(r'([,{]\s*)"(k_\d+|\d+)([a-zA-Z].*?)"(\s*[,}])')
 _RE_KV_FALLBACK = re.compile(r'"([^"\\]+)"\s*:\s*"((?:[^"\\]|\\.)*)"')
-_NON_TRANSLATABLE_RE = re.compile(r'''^[\s\u30fb\-_–—#*+=/\\|<>:;,.?!~"'()\[\]{}]+$''')
+_NON_TRANSLATABLE_RE = re.compile(r"""^[\s\u30fb\-_–—#*+=/\\|<>:;,.?!~"'()\[\]{}]+$""")
 _BOX_GRID_RE = re.compile(r"[\u2500-\u257f\u2580-\u259f]")
 _KANA_RE = re.compile(r"[\u3040-\u30ff]")
 _COORD_ROW_RE = re.compile(r"^\s*\d+[┃│]")
@@ -638,9 +640,7 @@ def repair_json_string(raw: str) -> str:
             cand_normalized = _RE_DOUBLE_QUOTE_KEY.sub(r'\1"\2":', candidate)
             cand_normalized = _RE_UNQUOTED_KEY_OPEN.sub(r'\1"\2":', cand_normalized)
             cand_normalized = _RE_COLON_DIGIT_SUFFIX.sub(r"\1\2", cand_normalized)
-            cand_normalized = _RE_MISSING_COLON_DIGIT_KEY.sub(
-                r'\1"\2": "\3"\4', cand_normalized
-            )
+            cand_normalized = _RE_MISSING_COLON_DIGIT_KEY.sub(r'\1"\2": "\3"\4', cand_normalized)
             cand_no_comma = _RE_TRAILING_COMMA.sub(r"\1", cand_normalized)
             try:
                 fast_json_loads(cand_no_comma)

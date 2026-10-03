@@ -474,7 +474,7 @@ class JSONTranslator:
             f"{self.config.get('source_language', 'Japanese')} to "
             f"{self.config.get('target_language', 'English')}.\n"
             f"Maintain technical terms and control characters (\\n, \\t) unchanged.\n"
-            f"Output raw JSON only: {{\"item\": \"<translated text>\"}}."
+            f'Output raw JSON only: {{"item": "<translated text>"}}.'
         )
         payload = fast_json_dumps({"item": clean_japanese_text(text_tuple[1])})
         data = {
@@ -503,9 +503,7 @@ class JSONTranslator:
                         if self.is_valid_translation(trans):
                             return trans
         except (HttpRequestError, ValueError, KeyError) as err:
-            self.logger.warning(
-                "Single item recovery failed for '%s': %s", text_tuple[1][:30], err
-            )
+            self.logger.warning("Single item recovery failed for '%s': %s", text_tuple[1][:30], err)
 
         return text_tuple[1]
 

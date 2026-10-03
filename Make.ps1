@@ -34,6 +34,7 @@ param(
 $script:ProjectTargets = @(
     "src",
     "clean_game_text.py",
+    "diff_untranslated.py",
     "main.py",
     "validate_translation.py"
 )

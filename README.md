@@ -45,6 +45,11 @@ pip install -e ".[dev]"
 python main.py pipeline -i data/raw/ManualTransFile.json -y
 ```
 
+
+```powershell
+python main.py pipeline -i data/raw/ManualTransFile.json -t data/processed/ManualTransFile_translated.json -y
+```
+
 All processed output files are saved to `data/processed/`.
 
 ## Pipeline Stages
@@ -81,6 +86,54 @@ python main.py validate -i data/processed/<name>_translated.json
 Outputs:
 - `data/processed/<name>_validated.json` (passed translations)
 - `data/processed/<name>_retranslate.json` (failed lines reset to Japanese for second pass)
+
+## Incremental Updates (Diff & Merge)
+
+When a game is updated with new content, translate only the newly introduced strings instead of re-processing the entire script:
+
+### Automated End-to-End Pipeline with `-t`
+Pass `-t / --translated` to the `pipeline` command to automate the complete update lifecycle (Diff -> Clean -> Translate -> Validate -> Merge) in one step:
+
+```powershell
+python main.py pipeline -i data/raw/ManualTransFile.json -t data/processed/ManualTransFile_translated.json -y
+```
+
+> **Note on Retranslation Recovery:**
+> Any lines flagged as needing retranslation during Stage 3 validation are automatically routed back to Stage 2 for a second translation pass using the cached `summary.txt` (Translation Blueprint). To maximize playable in-game English coverage, all successfully retranslated lines are merged directly into the final translation files (`ManualTransFile_translated.json` and master reference). Truly untranslatable lines (where output matches source) remain in `_retranslate.json` for manual review.
+
+### Manual Step-by-Step Workflow
+
+#### 1. Diff (Filter Out Already Translated Keys)
+Compares updated `ManualTransFile.json` against an existing `ManualTransFile_translated.json` and removes already translated keys in-place (or writes to a separate file via `-o`):
+
+```powershell
+# Modifies input file in-place (keeps only untranslated keys)
+python main.py diff -i data/raw/ManualTransFile.json -t data/processed/ManualTransFile_translated.json
+
+# Or using the standalone script wrapper:
+python diff_untranslated.py -i data/raw/ManualTransFile.json -t data/processed/ManualTransFile_translated.json
+```
+
+Options:
+- `-o / --output`: Write untranslated keys to a new file instead of modifying input in-place.
+- `--key-presence`: Filter keys solely by existence in the translated file rather than verifying a non-empty translation differing from the source key (safe mode).
+
+#### 2. Translate New Lines
+Translate the isolated new strings:
+
+```powershell
+python main.py translate -i data/raw/ManualTransFile.json -o data/processed/ManualTransFile_new_translated.json -y
+```
+
+#### 3. Merge Back into Master Translation
+Merges newly translated strings back into the master `ManualTransFile_translated.json`:
+
+```powershell
+python main.py merge -b data/processed/ManualTransFile_translated.json -n data/processed/ManualTransFile_new_translated.json
+
+# Or using the standalone script wrapper:
+python diff_untranslated.py merge -b data/processed/ManualTransFile_translated.json -n data/processed/ManualTransFile_new_translated.json
+```
 
 ## Testing & Verification
 

@@ -116,6 +116,9 @@
 | **Stage 2 (Translate)** | `& $PY main.py translate -i <cleaned.json>` | `data/processed/<stem>_translated.json` |
 | **Stage 3 (Validate)** | `& $PY main.py validate -i <translated.json>` | `data/processed/<stem>_validated.json` |
 | **Full Pipeline** | `& $PY main.py pipeline -i <raw.json>` | `data/processed/<stem>_validated.json` |
+| **Update Diff (Filter)** | `& $PY main.py diff -i <new_raw.json> -t <old_trans.json>` | In-place or `-o` untranslated keys |
+| **Update Merge** | `& $PY main.py merge -b <master_trans.json> -n <new_trans.json>` | In-place or `-o` merged master JSON |
+| **Standalone Diff/Merge** | `& $PY diff_untranslated.py -i <new_raw.json> -t <old_trans.json>` | Standalone diff & merge wrapper |
 | **Live LM Studio Test** | `& $PY tests/test_pipeline_harness.py --live` | Benchmarks live model endpoints |
 | **Quality Gate (SCA)** | `pwsh -ExecutionPolicy Bypass -File .\Make.ps1 sca` | Pylint 10/10, Mypy, Ruff, Isort |
 

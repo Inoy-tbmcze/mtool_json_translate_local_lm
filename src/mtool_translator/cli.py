@@ -1,13 +1,103 @@
 """Unified Command Line Interface for MTool JSON Translator."""
 
 import argparse
+import contextlib
 import sys
 from pathlib import Path
+from typing import Any
 
 from .cleaner import process_json_file
 from .config import resolve_output_path
+from .diff import process_diff, process_merge
 from .translator import process_translation
+from .utils import dump_json_file, load_json_file
 from .validator import process_validation
+
+
+# pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals,too-many-branches
+def _run_retranslation_recovery(
+    config_file: str,
+    stem: str,
+    output_dir: str | None,
+    retranslate_path: Path,
+    summary_file: Path,
+    validated_path: Path,
+    translated_path: Path,
+    auto_confirm: bool,
+) -> None:
+    """Retranslates lines that failed initial validation and merges them into final output files."""
+    if not retranslate_path.exists():
+        return
+
+    failed_items: dict[str, Any] = {}
+    try:
+        loaded_failed = load_json_file(retranslate_path)
+        if isinstance(loaded_failed, dict):
+            failed_items = loaded_failed
+    except (OSError, ValueError, TypeError):
+        return
+
+    if not failed_items:
+        return
+
+    print(
+        f"\n[Recovery Pass] Retranslating {len(failed_items)} line(s) "
+        "using existing Translation Blueprint..."
+    )
+    if output_dir:
+        retrans_out = Path(output_dir) / f"{stem}_retranslated_pass2.json"
+        retrans_prog = Path(output_dir) / f"{stem}_retranslate_progress.json"
+    else:
+        retrans_out = resolve_output_path(
+            f"{stem}_retranslated_pass2.json", default_subfolder="processed"
+        )
+        retrans_prog = resolve_output_path(
+            f"{stem}_retranslate_progress.json", default_subfolder="processed"
+        )
+
+    if retrans_prog.exists():
+        with contextlib.suppress(OSError):
+            retrans_prog.unlink()
+
+    process_translation(
+        config_file=config_file,
+        input_file=str(retranslate_path),
+        output_file=str(retrans_out),
+        auto_confirm=auto_confirm,
+        progress_file=retrans_prog,
+        summary_file=summary_file,
+    )
+
+    if not retrans_out.exists():
+        return
+
+    print("\nMerging retranslated lines into final translation...")
+    process_merge(base_file=str(validated_path), new_file=str(retrans_out))
+    process_merge(base_file=str(translated_path), new_file=str(retrans_out))
+
+    # Update retranslate file: retain only entries that failed completely (v == k or empty)
+    still_untranslated: dict[str, Any] = {}
+    try:
+        retrans_data = load_json_file(retrans_out)
+        if isinstance(retrans_data, dict):
+            for k in failed_items:
+                v = retrans_data.get(k)
+                if v is None or not isinstance(v, str) or not v.strip() or v == k:
+                    still_untranslated[k] = k
+    except (OSError, ValueError, TypeError):
+        still_untranslated = failed_items
+
+    dump_json_file(retranslate_path, still_untranslated, indent=True)
+    merged_count = len(failed_items) - len(still_untranslated)
+    print(
+        f"Retranslation complete: {merged_count}/{len(failed_items)} line(s) "
+        "merged into final translation."
+    )
+    if still_untranslated:
+        print(
+            f"Preserved {len(still_untranslated)} untranslated line(s) "
+            f"in {retranslate_path}."
+        )
 
 
 def run_pipeline(
@@ -15,16 +105,33 @@ def run_pipeline(
     input_file: str | None = None,
     output_dir: str | None = None,
     auto_confirm: bool = False,
+    translated_file: str | None = None,
 ) -> tuple[Path, Path]:
-    """Executes the full Stage 1 -> Stage 2 -> Stage 3 pipeline."""
-    print("=" * 60)
-    print("Starting Localization Pipeline: Clean -> Translate -> Validate")
-    print("=" * 60)
+    """Executes the localization pipeline (Clean -> Translate -> Validate).
+
+    If translated_file is provided, pre-filters input_file using diff against
+    existing translations and automatically merges passed translations back into
+    translated_file upon completion.
+    """
+    pipeline_input: str | None
+    if translated_file:
+        print("=" * 60)
+        print("Starting Incremental Pipeline: Diff -> Clean -> Translate -> Validate -> Merge")
+        print("=" * 60)
+        print("\n[Step 0/4] Filtering untranslated keys (Diff)...")
+        target_diff_input = input_file or "ManualTransFile.json"
+        process_diff(current_file=target_diff_input, translated_file=translated_file)
+        pipeline_input = target_diff_input
+    else:
+        print("=" * 60)
+        print("Starting Localization Pipeline: Clean -> Translate -> Validate")
+        print("=" * 60)
+        pipeline_input = input_file
 
     # 1. Clean
     print("\n[Step 1/3] Preprocessing and Cleaning...")
     cleaned_path, _ = process_json_file(
-        config_file=config_file, input_file=input_file, output_dir=output_dir
+        config_file=config_file, input_file=pipeline_input, output_dir=output_dir
     )
 
     # 2. Translate
@@ -53,6 +160,23 @@ def run_pipeline(
     validated_path, retranslate_path = process_validation(
         config_file=config_file, input_file=str(translated_path), output_dir=output_dir
     )
+
+    # 4. Optional Automatic Recovery Pass: Retranslate failed lines using existing Blueprint
+    _run_retranslation_recovery(
+        config_file=config_file,
+        stem=stem,
+        output_dir=output_dir,
+        retranslate_path=retranslate_path,
+        summary_file=summary_file,
+        validated_path=validated_path,
+        translated_path=translated_path,
+        auto_confirm=auto_confirm,
+    )
+
+    # 5. Merge if translated_file was provided
+    if translated_file:
+        print("\n[Final Step] Merging validated translations back into master file...")
+        process_merge(base_file=translated_file, new_file=str(validated_path))
 
     print("\n" + "=" * 60)
     print("Pipeline Execution Complete!")
@@ -105,9 +229,73 @@ def build_parser() -> argparse.ArgumentParser:
         "pipeline", help="Run full pipeline: Clean -> Translate -> Validate"
     )
     pipe_p.add_argument("-i", "--input", help="Path to initial raw input JSON file", default=None)
+    pipe_p.add_argument(
+        "-t",
+        "--translated",
+        help="Path to existing master translated JSON (enables incremental diff and merge)",
+        default=None,
+    )
     pipe_p.add_argument("-o", "--output-dir", help="Target output directory", default=None)
     pipe_p.add_argument("-c", "--config", help="Path to config.json", default="config.json")
     pipe_p.add_argument("-y", "--yes", action="store_true", help="Auto-confirm prompts")
+
+    # Diff sub-command
+    diff_p = subparsers.add_parser(
+        "diff",
+        help="Filter out already translated keys from current ManualTransFile.json",
+    )
+    diff_p.add_argument(
+        "-i",
+        "--input",
+        help="Path to current/updated game JSON file",
+        default="ManualTransFile.json",
+    )
+    diff_p.add_argument(
+        "-t",
+        "--translated",
+        help="Path to existing translated JSON reference file",
+        default="ManualTransFile_translated.json",
+    )
+    diff_p.add_argument(
+        "-o",
+        "--output",
+        help="Path to save remaining untranslated keys (default: modifies --input in-place)",
+        default=None,
+    )
+    diff_p.add_argument(
+        "--key-presence",
+        action="store_true",
+        help="Treat any key present in translated file as translated",
+    )
+
+    # Merge sub-command
+    merge_p = subparsers.add_parser(
+        "merge",
+        help="Merge newly translated lines back into master translated file",
+    )
+    merge_p.add_argument(
+        "-b",
+        "--base",
+        help="Path to master translated JSON file to update",
+        default="ManualTransFile_translated.json",
+    )
+    merge_p.add_argument(
+        "-n",
+        "--new",
+        help="Path to newly translated JSON file to merge in",
+        required=True,
+    )
+    merge_p.add_argument(
+        "-o",
+        "--output",
+        help="Path to save merged JSON file (default: modifies --base in-place)",
+        default=None,
+    )
+    merge_p.add_argument(
+        "--no-overwrite",
+        action="store_true",
+        help="Do not overwrite existing keys in base file",
+    )
 
     return parser
 
@@ -119,7 +307,10 @@ def main():
     # If no arguments provided, default to translation stage for backward compatibility
     if len(sys.argv) == 1:
         print("MTool JSON Translation Engine (Default Mode: Translate)")
-        print("Use --help to view available commands: clean, translate, validate, pipeline.\n")
+        print(
+            "Use --help to view available commands: "
+            "clean, translate, validate, pipeline, diff, merge.\n"
+        )
         process_translation(config_file="config.json", auto_confirm=False)
         return
 
@@ -146,6 +337,21 @@ def main():
             input_file=args.input,
             output_dir=args.output_dir,
             auto_confirm=args.yes,
+            translated_file=args.translated,
+        )
+    elif args.command == "diff":
+        process_diff(
+            current_file=args.input,
+            translated_file=args.translated,
+            output_file=args.output,
+            key_presence_only=args.key_presence,
+        )
+    elif args.command == "merge":
+        process_merge(
+            base_file=args.base,
+            new_file=args.new,
+            output_file=args.output,
+            overwrite_existing=not args.no_overwrite,
         )
     else:
         parser.print_help()
