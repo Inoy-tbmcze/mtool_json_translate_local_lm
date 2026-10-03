@@ -45,7 +45,7 @@ pip install -e ".[dev]"
 python main.py pipeline -i data/raw/ManualTransFile.json -y
 ```
 
-
+Update existing translation.
 ```powershell
 python main.py pipeline -i data/raw/ManualTransFile.json -t data/processed/ManualTransFile_translated.json -y
 ```

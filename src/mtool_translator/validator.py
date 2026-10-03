@@ -68,12 +68,14 @@ def _send_validation_request(
     prompt: str, config: dict[str, Any], session: FastLocalHttpClient | None = None
 ) -> dict[str, Any]:
     """Sends validation payload to LLM and returns parsed mapping."""
-    req_data = {
+    req_data: dict[str, Any] = {
         "model": config["model"],
         "messages": [{"role": "user", "content": prompt}],
         "temperature": config.get("temperature", 0.0),
         "max_tokens": config.get("max_tokens", 1024),
     }
+    if config.get("reasoning_effort"):
+        req_data["reasoning_effort"] = config["reasoning_effort"]
     headers = {
         "Authorization": f"Bearer {config.get('api_key', 'lm-studio')}",
     }

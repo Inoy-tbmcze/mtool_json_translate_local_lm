@@ -477,7 +477,7 @@ class JSONTranslator:
             f'Output raw JSON only: {{"item": "<translated text>"}}.'
         )
         payload = fast_json_dumps({"item": clean_japanese_text(text_tuple[1])})
-        data = {
+        data: dict[str, Any] = {
             "model": self.config["model"],
             "messages": [
                 {"role": "system", "content": prompt},
@@ -486,6 +486,8 @@ class JSONTranslator:
             "temperature": 0.1,
             "max_tokens": 512,
         }
+        if self.config.get("reasoning_effort"):
+            data["reasoning_effort"] = self.config["reasoning_effort"]
         try:
             resp = self.session.post(
                 api_url,
