@@ -137,14 +137,26 @@ def run_pipeline(
     # 2. Translate
     print("\n[Step 2/3] Translating cleaned text...")
     stem = cleaned_path.stem.replace("_cleaned", "")
+    trans_stem = f"{stem}_incremental" if translated_file else stem
     if output_dir:
-        out_trans = Path(output_dir) / f"{stem}_translated.json"
-        progress_file = Path(output_dir) / f"{stem}_progress.json"
+        out_trans = Path(output_dir) / f"{trans_stem}_translated.json"
+        progress_file = Path(output_dir) / f"{trans_stem}_progress.json"
         summary_file = Path(output_dir) / f"{stem}_summary.txt"
     else:
-        out_trans = resolve_output_path(f"{stem}_translated.json", default_subfolder="processed")
-        progress_file = resolve_output_path(f"{stem}_progress.json", default_subfolder="processed")
-        summary_file = resolve_output_path(f"{stem}_summary.txt", default_subfolder="processed")
+        out_trans = resolve_output_path(
+            f"{trans_stem}_translated.json", default_subfolder="processed"
+        )
+        progress_file = resolve_output_path(
+            f"{trans_stem}_progress.json", default_subfolder="processed"
+        )
+        summary_file = resolve_output_path(
+            f"{stem}_summary.txt", default_subfolder="processed"
+        )
+
+    # Collision guard: Ensure out_trans never collides with or overwrites translated_file
+    if translated_file and out_trans.resolve() == Path(translated_file).resolve():
+        out_trans = out_trans.with_name(f"{stem}_incremental_translated.json")
+        progress_file = progress_file.with_name(f"{stem}_incremental_progress.json")
 
     translated_path = process_translation(
         config_file=config_file,
@@ -164,7 +176,7 @@ def run_pipeline(
     # 4. Optional Automatic Recovery Pass: Retranslate failed lines using existing Blueprint
     _run_retranslation_recovery(
         config_file=config_file,
-        stem=stem,
+        stem=trans_stem,
         output_dir=output_dir,
         retranslate_path=retranslate_path,
         summary_file=summary_file,

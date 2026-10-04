@@ -297,6 +297,28 @@ class TestDiffProcess(unittest.TestCase):
             self.assertEqual(trans_data["謎の呪文"], "Mysterious Spell")
             self.assertEqual(trans_data["剣"], "Sword")
 
+    def test_incremental_out_trans_does_not_collide_with_master(self) -> None:
+        """Verifies incremental out_trans uses isolated filename to prevent clobbering master."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            master_file = Path(tmp_dir) / "ManualTransFile_translated.json"
+            # Master file starts with 50 lines
+            master_data = {f"old_key_{i}": f"Old Trans {i}" for i in range(50)}
+            dump_json_file(master_file, master_data)
+
+            # Incremental delta translation result
+            incremental_trans_file = Path(tmp_dir) / "ManualTransFile_incremental_translated.json"
+            incremental_data = {"new_key_1": "New Trans 1", "new_key_2": "New Trans 2"}
+            dump_json_file(incremental_trans_file, incremental_data)
+
+            # Merge incremental result into master
+            process_merge(base_file=master_file, new_file=incremental_trans_file)
+
+            # Master file must retain all 50 original lines plus the 2 new ones
+            merged = load_json_file(master_file)
+            self.assertEqual(len(merged), 52)
+            self.assertEqual(merged["old_key_0"], "Old Trans 0")
+            self.assertEqual(merged["new_key_1"], "New Trans 1")
+
 
 if __name__ == "__main__":
     unittest.main()
