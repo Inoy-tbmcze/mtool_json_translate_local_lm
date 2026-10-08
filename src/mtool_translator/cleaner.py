@@ -29,6 +29,7 @@ from .utils import (
     build_japanese_regex,
     calculate_japanese_ratio,
     dump_json_file,
+    execute_batch_waves_with_autosave,
     has_japanese_characters,
     is_ascii_art_or_symbol_heavy,
     is_box_drawing_or_grid_art,
@@ -513,33 +514,34 @@ def _execute_stage2_waves(
     state: CleanerState,
 ) -> None:
     """Orchestrates Stage 2 synchronized batch waves and autosaves."""
-    max_workers = config.get("max_workers", 4)
-    save_interval = config.get("save_interval", 10)
-    waves = [batches[i : i + max_workers] for i in range(0, len(batches), max_workers)]
-    print(
-        f"Processing {len(batches)} batches across {len(waves)} "
-        f"synchronized waves (Wave size: {max_workers})...\n"
-    )
-
-    session = FastLocalHttpClient(max_connections=max_workers)
     lock = threading.RLock()
-    ctx = CleanerWaveContext(config=config, session=session, lock=lock, state=state)
-    try:
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            for wave_idx, current_wave in enumerate(waves, 1):
-                _process_wave_with_executor(executor, current_wave, ctx)
-                if wave_idx % save_interval == 0 and wave_idx < len(waves):
-                    print(f"Wave {wave_idx}/{len(waves)} complete. Autosaving progress...")
-                    save_progress(
-                        paths.cleaned,
-                        paths.quarantine,
-                        state.cleaned_data,
-                        state.quarantine_data,
-                        lock,
-                        state=state,
-                    )
-    finally:
-        session.close()
+
+    def _process(
+        executor: ThreadPoolExecutor,
+        current_wave: list[list[tuple[int, str, str]]],
+        session: FastLocalHttpClient,
+    ) -> None:
+        ctx = CleanerWaveContext(config=config, session=session, lock=lock, state=state)
+        _process_wave_with_executor(executor, current_wave, ctx)
+
+    def _save() -> None:
+        save_progress(
+            paths.cleaned,
+            paths.quarantine,
+            state.cleaned_data,
+            state.quarantine_data,
+            lock,
+            state=state,
+        )
+
+    execute_batch_waves_with_autosave(
+        batches,
+        config,
+        lambda n: FastLocalHttpClient(max_connections=n),
+        _process,
+        _save,
+        show_banner=True,
+    )
 
 
 def process_json_file(

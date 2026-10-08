@@ -745,3 +745,37 @@ def run_batch_wave(
             results = worker_fn(batch, config, session)
 
         apply_result_fn(batch, results)
+
+
+# pylint: disable=too-many-arguments,too-many-positional-arguments
+def execute_batch_waves_with_autosave(
+    batches: list[list[Any]],
+    config: dict[str, Any],
+    session_factory: Callable[[int], Any],
+    process_wave_fn: Callable[[ThreadPoolExecutor, list[list[Any]], Any], None],
+    save_fn: Callable[[], None],
+    *,
+    show_banner: bool = False,
+) -> None:
+    """Orchestrates synchronized batch waves across ThreadPoolExecutor with periodic autosaves."""
+    if not batches:
+        return
+    max_workers = config.get("max_workers", 4)
+    save_interval = config.get("save_interval", 10)
+    waves = [batches[i : i + max_workers] for i in range(0, len(batches), max_workers)]
+    if show_banner:
+        print(
+            f"Processing {len(batches)} batches across {len(waves)} "
+            f"synchronized waves (Wave size: {max_workers})...\n"
+        )
+    session = session_factory(max_workers)
+    try:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            for wave_idx, current_wave in enumerate(waves, 1):
+                process_wave_fn(executor, current_wave, session)
+                if wave_idx % save_interval == 0 and wave_idx < len(waves):
+                    print(f"Wave {wave_idx}/{len(waves)} complete. Autosaving progress...")
+                    save_fn()
+    finally:
+        if hasattr(session, "close"):
+            session.close()

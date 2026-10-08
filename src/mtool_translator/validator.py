@@ -18,6 +18,7 @@ from .http_client import FastLocalHttpClient, HttpRequestError, default_client
 from .lm_studio import ensure_model_loaded
 from .utils import (
     dump_json_file,
+    execute_batch_waves_with_autosave,
     load_json_file,
     parse_llm_json_response,
     run_batch_wave,
@@ -251,21 +252,22 @@ def _run_validation_waves(
     lock: threading.RLock,
 ) -> None:
     """Runs batch waves and saves checkpoints periodically."""
-    max_workers = config.get("max_workers", 4)
-    save_interval = config.get("save_interval", 10)
-    waves = [batches[i : i + max_workers] for i in range(0, len(batches), max_workers)]
 
-    session = FastLocalHttpClient(max_connections=max_workers)
-    ctx = ValidationWaveContext(config=config, session=session, lock=lock, state=state)
-    try:
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            for wave_idx, current_wave in enumerate(waves, 1):
-                _process_validation_wave_with_executor(executor, current_wave, ctx)
-                if wave_idx % save_interval == 0 and wave_idx < len(waves):
-                    print(f"Wave {wave_idx}/{len(waves)} complete. Autosaving progress...")
-                    save_progress(paths, state, lock)
-    finally:
-        session.close()
+    def _process(
+        executor: ThreadPoolExecutor,
+        current_wave: list[list[tuple[int, str, str]]],
+        session: FastLocalHttpClient,
+    ) -> None:
+        ctx = ValidationWaveContext(config=config, session=session, lock=lock, state=state)
+        _process_validation_wave_with_executor(executor, current_wave, ctx)
+
+    execute_batch_waves_with_autosave(
+        batches,
+        config,
+        lambda n: FastLocalHttpClient(max_connections=n),
+        _process,
+        lambda: save_progress(paths, state, lock),
+    )
 
 
 def process_validation(

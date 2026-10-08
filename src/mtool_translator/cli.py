@@ -94,10 +94,7 @@ def _run_retranslation_recovery(
         "merged into final translation."
     )
     if still_untranslated:
-        print(
-            f"Preserved {len(still_untranslated)} untranslated line(s) "
-            f"in {retranslate_path}."
-        )
+        print(f"Preserved {len(still_untranslated)} untranslated line(s) in {retranslate_path}.")
 
 
 def run_pipeline(
@@ -149,9 +146,7 @@ def run_pipeline(
         progress_file = resolve_output_path(
             f"{trans_stem}_progress.json", default_subfolder="processed"
         )
-        summary_file = resolve_output_path(
-            f"{stem}_summary.txt", default_subfolder="processed"
-        )
+        summary_file = resolve_output_path(f"{stem}_summary.txt", default_subfolder="processed")
 
     # Collision guard: Ensure out_trans never collides with or overwrites translated_file
     if translated_file and out_trans.resolve() == Path(translated_file).resolve():

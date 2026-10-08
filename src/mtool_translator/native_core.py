@@ -56,7 +56,6 @@ def _assemble_with_labels(instructions: list[object]) -> bytes:
     return bytes(out)
 
 
-
 def _build_token_count_machine_code() -> bytes:
     """Builds x86-64 machine code to count Japanese (Kana/Kanji) and ASCII/Latin chars in UTF-8."""
     instrs: list[object] = [

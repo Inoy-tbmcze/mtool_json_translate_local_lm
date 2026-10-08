@@ -171,11 +171,7 @@ def process_diff(
     print(f"Total keys checked:    {total_keys}")
     print(f"Already translated:    {removed_keys} (removed)")
     print(f"Untranslated keys:     {remaining_keys} (retained)")
-    mode_str = (
-        "Key presence only"
-        if key_presence_only
-        else "Safe (non-empty & different from key)"
-    )
+    mode_str = "Key presence only" if key_presence_only else "Safe (non-empty & different from key)"
     print(f"Filter mode:           {mode_str}")
     inplace_str = " (in-place)" if target_path == current_path else ""
     print(f"Output saved to:       {target_path}{inplace_str}")

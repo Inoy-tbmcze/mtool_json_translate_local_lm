@@ -7,8 +7,7 @@ The system preserves JSON dictionary structures, game context, character voices,
 ## High-Performance Architecture
 
 The core pipeline is tuned for maximum throughput and minimal memory overhead:
-- **Native x86-64 Machine Code Engine**: JIT-allocated machine code routines via Win32 `VirtualAlloc` for zero-overhead ASCII identifier scanning, repeated byte detection, and 256-LUT symbol counting, with automatic fallback for non-x86 platforms.
-- **L1-Cache Unicode BMP Bitmask**: 8,192-byte direct bitmask for $O(1)$ classification across all 65,536 Basic Multilingual Plane characters.
+- **Native x86-64 Machine Code Engine**: JIT-allocated machine code routines via Win32 `VirtualAlloc` with W^X DEP memory protection for ultra-fast token estimation on UTF-8 text, with automatic fallback for non-x86 platforms.
 - **Fast-Rejection Text Processing**: Zero-allocation substring short-circuit checks skipping string mutation for >95% of standard game lines.
 - **SIMD JSON Serialization**: Native C/Rust accelerated JSON serialization and deserialization via `orjson`.
 - **Low-Latency Network Socket Tuning**: Persistent HTTP connection pools with `TCP_NODELAY` (Nagle's algorithm disabled) to eliminate packet buffering latency on loopback (`127.0.0.1`) local LLM calls.
