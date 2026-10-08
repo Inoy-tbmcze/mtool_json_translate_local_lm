@@ -38,7 +38,6 @@ def resolve_input_path(filename: str | Path, default_subfolder: str = "raw") -> 
     search_paths = (
         root / "data" / default_subfolder / path.name,
         root / "data" / "reference" / path.name,
-        root / "data" / "dictionaries" / path.name,
         root / "data" / "raw" / path.name,
         root / "data" / "processed" / path.name,
         root / path.name,

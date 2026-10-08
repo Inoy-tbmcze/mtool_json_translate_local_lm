@@ -9,12 +9,15 @@ from __future__ import annotations
 import atexit
 import ctypes
 import platform
+import re
 import sys
 from collections.abc import Callable
 
 # Character set definitions for symbol checking
 SYMBOL_CHARS_BYTES = b"=-_*+#/\\|~<>[]{}()!@$%^&:`';"
 SYMBOL_CHARS_SET = frozenset("=-_*+#/\\|~<>[]{}()!@$%^&:`';")
+_SYMBOL_DELETE_TRANS = str.maketrans("", "", SYMBOL_CHARS_BYTES.decode("ascii"))
+_ASCII_IDENT_RE = re.compile(r"^[a-zA-Z0-9_\-.\(\) \t\r\n]+$")
 
 # Precomputed 256-byte LUT for instant symbol identification
 SYMBOL_LUT = bytearray(256)
@@ -52,134 +55,6 @@ def _assemble_with_labels(instructions: list[object]) -> bytes:
             out.extend(item)
     return bytes(out)
 
-
-def _build_ascii_ident_machine_code() -> bytes:
-    """Builds self-contained x86-64 machine code for pure ASCII identifier matching."""
-    allowed = set(b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-.() \t\r\n")
-    table = bytearray(256)
-    for char_byte in allowed:
-        table[char_byte] = 1
-
-    code = bytearray(
-        [
-            0x48,
-            0x85,
-            0xD2,  # test rdx, rdx (len == 0?)
-            0x74,
-            0x24,  # jz .fail (+36 -> 0x29)
-            0x4C,
-            0x8D,
-            0x05,
-            0x20,
-            0x00,
-            0x00,
-            0x00,  # lea r8, [rip + 0x20] (table at 0x2C)
-            0x4D,
-            0x31,
-            0xC9,  # xor r9, r9 (i = 0)
-            # .loop (0x0F):
-            0x42,
-            0x0F,
-            0xB6,
-            0x04,
-            0x09,  # movzx eax, byte ptr [rcx + r9]
-            0x41,
-            0x80,
-            0x3C,
-            0x00,
-            0x00,  # cmp byte ptr [r8 + rax], 0
-            0x74,
-            0x0E,  # je .fail (+14 -> 0x29)
-            0x49,
-            0xFF,
-            0xC1,  # inc r9
-            0x49,
-            0x39,
-            0xD1,  # cmp r9, rdx
-            0x72,
-            0xEC,  # jb .loop (-20 -> 0x0F)
-            0xB8,
-            0x01,
-            0x00,
-            0x00,
-            0x00,  # mov eax, 1
-            0xC3,  # ret
-            # .fail (0x29):
-            0x31,
-            0xC0,  # xor eax, eax
-            0xC3,  # ret
-        ]
-    )
-    return bytes(code + table)
-
-
-def _build_repeated_bytes_machine_code() -> bytes:
-    """Builds x86-64 machine code for finding consecutive identical byte runs."""
-    instrs: list[object] = [
-        b"\x48\x85\xd2",  # test rdx, rdx
-        b"\x74",
-        ("rel8", "fail"),  # jz fail
-        b"\x49\x63\xc0",  # movsxd rax, r8d
-        b"\x48\x39\xc2",  # cmp rdx, rax
-        b"\x72",
-        ("rel8", "fail"),  # jb fail
-        b"\x41\x83\xf8\x01",  # cmp r8d, 1
-        b"\x7e",
-        ("rel8", "check_one"),  # jle check_one
-        b"\x8a\x01",  # mov al, byte ptr [rcx]
-        b"\x41\xb9\x01\x00\x00\x00",  # mov r9d, 1
-        b"\x49\xc7\xc2\x01\x00\x00\x00",  # mov r10, 1
-        "loop",
-        b"\x42\x38\x04\x11",  # cmp byte ptr [rcx + r10], al
-        b"\x75",
-        ("rel8", "diff"),  # jne diff
-        b"\x41\xff\xc1",  # inc r9d
-        b"\x45\x39\xc1",  # cmp r9d, r8d (REX.R=1, REX.B=1)
-        b"\x7d",
-        ("rel8", "success"),  # jge success
-        b"\xeb",
-        ("rel8", "next"),  # jmp next
-        "diff",
-        b"\x42\x8a\x04\x11",  # mov al, byte ptr [rcx + r10]
-        b"\x41\xb9\x01\x00\x00\x00",  # mov r9d, 1
-        "next",
-        b"\x49\xff\xc2",  # inc r10
-        b"\x49\x39\xd2",  # cmp r10, rdx
-        b"\x72",
-        ("rel8", "loop"),  # jb loop
-        "fail",
-        b"\x31\xc0\xc3",  # xor eax, eax; ret
-        "success",
-        b"\xb8\x01\x00\x00\x00\xc3",  # mov eax, 1; ret
-        "check_one",
-        b"\x45\x85\xc0",  # test r8d, r8d
-        b"\x7e",
-        ("rel8", "fail"),  # jle fail
-        b"\xeb",
-        ("rel8", "success"),  # jmp success
-    ]
-    return _assemble_with_labels(instrs)
-
-
-def _build_symbols_machine_code() -> bytes:
-    """Builds x86-64 machine code for symbol counting via 256-byte LUT."""
-    instrs: list[object] = [
-        b"\x48\x31\xc0",  # xor rax, rax (count = 0)
-        b"\x4d\x31\xc9",  # xor r9, r9   (i = 0)
-        "loop",
-        b"\x49\x39\xd1",  # cmp r9, rdx
-        b"\x73",
-        ("rel8", "done"),  # jae done
-        b"\x46\x0f\xb6\x14\x09",  # movzx r10d, byte ptr [rcx + r9]
-        b"\x47\x0f\xb6\x1c\x10",  # movzx r11d, byte ptr [r8 + r10]
-        b"\x4c\x01\xd8",  # add rax, r11
-        b"\x41\xff\xc1",  # inc r9
-        b"\xeb",
-        ("rel8", "loop"),  # jmp loop
-        "done",
-        b"\xc3",  # ret
-    ]
-    return _assemble_with_labels(instrs)
 
 
 def _build_token_count_machine_code() -> bytes:
@@ -378,9 +253,6 @@ class NativeKernelManager:
     def __init__(self) -> None:
         self.is_available = False
         self._allocated_pages: list[int] = []
-        self._fn_ascii_ident: Callable[[bytes, int], int] | None = None
-        self._fn_repeated_bytes: Callable[[bytes, int, int], int] | None = None
-        self._fn_count_symbols: Callable[[bytes, int, bytes], int] | None = None
         self._fn_count_tokens: Callable[[bytes, int], int] | None = None
 
         if sys.platform == "win32" and platform.machine().lower() in (
@@ -393,7 +265,7 @@ class NativeKernelManager:
             atexit.register(self.cleanup)
 
     def _init_windows_x64(self) -> None:
-        """Initializes native machine code execution on Windows AMD64."""
+        """Initializes native machine code execution on Windows AMD64 with W^X protection."""
         try:
             kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
             kernel32.VirtualAlloc.restype = ctypes.c_void_p
@@ -416,59 +288,27 @@ class NativeKernelManager:
             ]
 
             mem_commit = 0x1000 | 0x2000
-            page_rwx = 0x40
+            page_rw = 0x04  # PAGE_READWRITE (enforce W^X)
+            page_rx = 0x20  # PAGE_EXECUTE_READ
 
             def alloc_native_func(payload: bytes, func_type: type) -> Callable:
-                addr = kernel32.VirtualAlloc(None, len(payload), mem_commit, page_rwx)
+                addr = kernel32.VirtualAlloc(None, len(payload), mem_commit, page_rw)
                 if not addr:
                     raise OSError("VirtualAlloc failed")
                 self._allocated_pages.append(addr)
                 ctypes.memmove(addr, payload, len(payload))
+                old_protect = ctypes.c_uint32(0)
+                if not kernel32.VirtualProtect(
+                    addr, len(payload), page_rx, ctypes.byref(old_protect)
+                ):
+                    raise OSError("VirtualProtect failed")
                 return func_type(addr)
 
-            fn_ascii_t = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_char_p, ctypes.c_size_t)
-            fn_rep_t = ctypes.CFUNCTYPE(
-                ctypes.c_int, ctypes.c_char_p, ctypes.c_size_t, ctypes.c_int
-            )
-            fn_sym_t = ctypes.CFUNCTYPE(
-                ctypes.c_size_t, ctypes.c_char_p, ctypes.c_size_t, ctypes.c_char_p
-            )
             fn_tok_t = ctypes.CFUNCTYPE(ctypes.c_uint64, ctypes.c_char_p, ctypes.c_size_t)
-
-            self._fn_ascii_ident = alloc_native_func(_build_ascii_ident_machine_code(), fn_ascii_t)
-            self._fn_repeated_bytes = alloc_native_func(
-                _build_repeated_bytes_machine_code(), fn_rep_t
-            )
-            self._fn_count_symbols = alloc_native_func(_build_symbols_machine_code(), fn_sym_t)
             self._fn_count_tokens = alloc_native_func(_build_token_count_machine_code(), fn_tok_t)
-
             self.is_available = True
         except (OSError, AttributeError, RuntimeError):
             self.is_available = False
-
-    def is_ascii_ident(self, raw_bytes: bytes) -> bool:
-        """Invokes native machine code to check pure ASCII identifier status."""
-        if not raw_bytes:
-            return False
-        if self._fn_ascii_ident is not None:
-            return bool(self._fn_ascii_ident(raw_bytes, len(raw_bytes)) == 1)
-        return False
-
-    def has_repeated_bytes(self, raw_bytes: bytes, min_repeat: int = 5) -> bool:
-        """Invokes native machine code to check for consecutive repeated bytes."""
-        if not raw_bytes:
-            return False
-        if self._fn_repeated_bytes is not None:
-            return bool(self._fn_repeated_bytes(raw_bytes, len(raw_bytes), min_repeat) == 1)
-        return False
-
-    def count_symbols(self, raw_bytes: bytes) -> int:
-        """Invokes native machine code to count symbols via 256-byte LUT."""
-        if not raw_bytes:
-            return 0
-        if self._fn_count_symbols is not None:
-            return int(self._fn_count_symbols(raw_bytes, len(raw_bytes), SYMBOL_LUT_BYTES))
-        return 0
 
     def count_jp_and_ascii(self, raw_bytes: bytes) -> tuple[int, int]:
         """Counts Japanese (Kana/Kanji) and ASCII/Latin chars via native machine code."""
@@ -495,36 +335,15 @@ class NativeKernelManager:
 NATIVE_MANAGER = NativeKernelManager()
 
 
-_ASCII_IDENT_ALLOWED_BYTES = frozenset(
-    b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-.() \t\r\n"
-)
-
-
 def fast_is_ascii_identifier(text: str) -> bool:
-    """Checks pure ASCII identifier characters using native assembly or bitmask."""
-    if not text:
-        return False
-    if not text.isascii():
-        return False
-
-    raw = text.encode("ascii", "replace")
-    if NATIVE_MANAGER.is_available:
-        return NATIVE_MANAGER.is_ascii_ident(raw)
-
-    return all(b in _ASCII_IDENT_ALLOWED_BYTES for b in raw)
+    """Checks pure ASCII identifier characters using compiled C regex."""
+    return bool(text and text.isascii() and _ASCII_IDENT_RE.fullmatch(text))
 
 
 def fast_has_repeated_chars(text: str, min_repeat: int = 5) -> bool:
-    """Checks for consecutive identical characters using native assembly with linear sweep."""
+    """Checks for consecutive identical characters using zero-allocation linear sweep."""
     if not text or len(text) < min_repeat:
         return False
-
-    if text.isascii():
-        raw = text.encode("ascii", "replace")
-        if NATIVE_MANAGER.is_available:
-            return NATIVE_MANAGER.has_repeated_bytes(raw, min_repeat)
-
-    # Fast linear sweep fallback
     count = 1
     prev = text[0]
     for char in text[1:]:
@@ -539,16 +358,10 @@ def fast_has_repeated_chars(text: str, min_repeat: int = 5) -> bool:
 
 
 def fast_count_symbols(text: str) -> int:
-    """Counts symbol characters using native assembly 256-byte LUT or set containment."""
+    """Counts symbol characters using C-accelerated str.translate deletion."""
     if not text:
         return 0
-
-    if text.isascii():
-        raw = text.encode("ascii", "replace")
-        if NATIVE_MANAGER.is_available:
-            return NATIVE_MANAGER.count_symbols(raw)
-
-    return sum(1 for char in text if char in SYMBOL_CHARS_SET)
+    return len(text) - len(text.translate(_SYMBOL_DELETE_TRANS))
 
 
 def fast_count_jp_and_ascii(text: str) -> tuple[int, int]:
@@ -561,6 +374,18 @@ def fast_count_jp_and_ascii(text: str) -> tuple[int, int]:
         return 0, 0
     if text.isascii():
         return 0, len(text)
+
+    # Fast inline bypass for short strings to avoid FFI marshalling
+    if len(text) <= 3:
+        jp_count = 0
+        ascii_count = 0
+        for char in text:
+            code_point = ord(char)
+            if (0x3040 <= code_point <= 0x30FF) or (0x4E00 <= code_point <= 0x9FAF):
+                jp_count += 1
+            elif code_point <= 0x024F:
+                ascii_count += 1
+        return jp_count, ascii_count
 
     if NATIVE_MANAGER.is_available:
         return NATIVE_MANAGER.count_jp_and_ascii(text.encode("utf-8"))
