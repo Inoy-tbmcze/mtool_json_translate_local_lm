@@ -67,4 +67,4 @@ data/processed/*
 /NOTE_TO_SELF
 /current_task_notes/
 /config_old.json
-/benchmarks/results/
+/benchmarks/*
