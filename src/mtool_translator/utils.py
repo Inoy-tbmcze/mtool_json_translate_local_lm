@@ -12,38 +12,26 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
-from .native_core import fast_count_symbols, fast_find_json_bounds, fast_has_repeated_chars
+import orjson
 
-try:
-    import orjson
+from .native_core import fast_count_symbols, fast_has_repeated_chars
 
-    def fast_json_loads(data: str | bytes) -> Any:
-        """Fast JSON deserializer using high-performance orjson."""
-        return orjson.loads(data)
 
-    def fast_json_dumps(obj: Any, indent: bool = False) -> str:
-        """Fast JSON serializer to string using high-performance orjson."""
-        opt = orjson.OPT_INDENT_2 if indent else 0
-        return orjson.dumps(obj, option=opt).decode("utf-8")
+def fast_json_loads(data: str | bytes) -> Any:
+    """Fast JSON deserializer using high-performance orjson."""
+    return orjson.loads(data)
 
-    def fast_json_dumps_bytes(obj: Any, indent: bool = False) -> bytes:
-        """Fast JSON serializer to bytes using high-performance orjson."""
-        opt = orjson.OPT_INDENT_2 if indent else 0
-        return orjson.dumps(obj, option=opt)
 
-except ImportError:
+def fast_json_dumps(obj: Any, indent: bool = False) -> str:
+    """Fast JSON serializer to string using high-performance orjson."""
+    opt = orjson.OPT_INDENT_2 if indent else 0
+    return orjson.dumps(obj, option=opt).decode("utf-8")
 
-    def fast_json_loads(data: str | bytes) -> Any:
-        """Fallback JSON deserializer using standard library json."""
-        return json.loads(data)
 
-    def fast_json_dumps(obj: Any, indent: bool = False) -> str:
-        """Fallback JSON serializer to string using standard library json."""
-        return json.dumps(obj, ensure_ascii=False, indent=2 if indent else None)
-
-    def fast_json_dumps_bytes(obj: Any, indent: bool = False) -> bytes:
-        """Fallback JSON serializer to bytes using standard library json."""
-        return json.dumps(obj, ensure_ascii=False, indent=2 if indent else None).encode("utf-8")
+def fast_json_dumps_bytes(obj: Any, indent: bool = False) -> bytes:
+    """Fast JSON serializer to bytes using high-performance orjson."""
+    opt = orjson.OPT_INDENT_2 if indent else 0
+    return orjson.dumps(obj, option=opt)
 
 
 def load_json_file(file_path: str | Path) -> Any:
@@ -124,8 +112,6 @@ FILE_EXTENSIONS = frozenset(
         ".txt",
     )
 )
-
-FILE_EXTENSIONS_SET = FILE_EXTENSIONS  # Backward compatibility alias
 
 ENGINE_KEY_RE = re.compile(
     r"(?:フレーム\s*\d+$|"
@@ -374,13 +360,10 @@ def _strip_markdown_fences(text: str) -> str:
     return text[f1 + 3 : f2].strip() if f2 > f1 + 3 else text[f1 + 3 :].strip()
 
 
-def _extract_container_slice(text: str | bytes) -> tuple[int, int]:
+def _extract_container_slice(text: str) -> tuple[int, int]:
     """Finds starting and ending indices of outermost JSON container."""
     if not text:
         return -1, -1
-
-    if isinstance(text, (bytes, bytearray)):
-        return fast_find_json_bounds(bytes(text))
 
     n = len(text)
     first_char = text[0]

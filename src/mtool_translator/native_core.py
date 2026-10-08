@@ -372,79 +372,6 @@ def _build_token_count_machine_code() -> bytes:
     return _assemble_with_labels(instrs)
 
 
-def _build_json_bounds_machine_code() -> bytes:
-    """Builds x86-64 machine code to scan buffer for first and last JSON container delimiters."""
-    instrs: list[object] = [
-        # test rdx, rdx (len == 0?)
-        b"\x48\x85\xd2",
-        b"\x0f\x84",
-        ("rel32", "done_none"),
-        # r8d = -1 (first = -1)
-        b"\x41\xb8\xff\xff\xff\xff",
-        # r9d = -1 (last = -1)
-        b"\x41\xb9\xff\xff\xff\xff",
-        # r10 = 0 (offset i = 0)
-        b"\x4d\x31\xd2",
-        "loop",
-        # cmp r10, rdx
-        b"\x49\x39\xd2",
-        b"\x73",
-        ("rel8", "done"),
-        # movzx eax, byte ptr [rcx + r10]
-        b"\x42\x0f\xb6\x04\x11",
-        # cmp al, 0x7B ('{')
-        b"\x3c\x7b",
-        b"\x74",
-        ("rel8", "check_open"),
-        # cmp al, 0x5B ('[')
-        b"\x3c\x5b",
-        b"\x74",
-        ("rel8", "check_open"),
-        # cmp al, 0x7D ('}')
-        b"\x3c\x7d",
-        b"\x74",
-        ("rel8", "check_close"),
-        # cmp al, 0x5D (']')
-        b"\x3c\x5d",
-        b"\x74",
-        ("rel8", "check_close"),
-        "next",
-        # inc r10
-        b"\x49\xff\xc2",
-        b"\xeb",
-        ("rel8", "loop"),
-        "check_open",
-        # cmp r8d, -1
-        b"\x41\x83\xf8\xff",
-        b"\x75",
-        ("rel8", "next"),
-        # mov r8d, r10d
-        b"\x45\x89\xd0",
-        b"\xeb",
-        ("rel8", "next"),
-        "check_close",
-        # mov r9d, r10d
-        b"\x45\x89\xd1",
-        b"\xeb",
-        ("rel8", "next"),
-        "done",
-        # movsxd rax, r8d
-        b"\x49\x63\xc0",
-        # shl rax, 32
-        b"\x48\xc1\xe0\x20",
-        # mov r11d, r9d
-        b"\x45\x8b\xd9",
-        # or rax, r11
-        b"\x4c\x09\xd8",
-        b"\xc3",
-        "done_none",
-        # rax = -1 (0xFFFFFFFFFFFFFFFF)
-        b"\x48\xc7\xc0\xff\xff\xff\xff",
-        b"\xc3",
-    ]
-    return _assemble_with_labels(instrs)
-
-
 class NativeKernelManager:
     """Manages JIT allocation and lifetime of native x86-64 execution buffers."""
 
@@ -455,7 +382,6 @@ class NativeKernelManager:
         self._fn_repeated_bytes: Callable[[bytes, int, int], int] | None = None
         self._fn_count_symbols: Callable[[bytes, int, bytes], int] | None = None
         self._fn_count_tokens: Callable[[bytes, int], int] | None = None
-        self._fn_json_bounds: Callable[[bytes, int], int] | None = None
 
         if sys.platform == "win32" and platform.machine().lower() in (
             "amd64",
@@ -508,7 +434,6 @@ class NativeKernelManager:
                 ctypes.c_size_t, ctypes.c_char_p, ctypes.c_size_t, ctypes.c_char_p
             )
             fn_tok_t = ctypes.CFUNCTYPE(ctypes.c_uint64, ctypes.c_char_p, ctypes.c_size_t)
-            fn_bnd_t = ctypes.CFUNCTYPE(ctypes.c_uint64, ctypes.c_char_p, ctypes.c_size_t)
 
             self._fn_ascii_ident = alloc_native_func(_build_ascii_ident_machine_code(), fn_ascii_t)
             self._fn_repeated_bytes = alloc_native_func(
@@ -516,7 +441,6 @@ class NativeKernelManager:
             )
             self._fn_count_symbols = alloc_native_func(_build_symbols_machine_code(), fn_sym_t)
             self._fn_count_tokens = alloc_native_func(_build_token_count_machine_code(), fn_tok_t)
-            self._fn_json_bounds = alloc_native_func(_build_json_bounds_machine_code(), fn_bnd_t)
 
             self.is_available = True
         except (OSError, AttributeError, RuntimeError):
@@ -554,19 +478,6 @@ class NativeKernelManager:
             packed = int(self._fn_count_tokens(raw_bytes, len(raw_bytes)))
             return packed >> 32, packed & 0xFFFFFFFF
         return 0, 0
-
-    def find_json_bounds(self, raw_bytes: bytes) -> tuple[int, int]:
-        """Scans buffer via native machine code to locate first and last JSON delimiters."""
-        if not raw_bytes:
-            return -1, -1
-        if self._fn_json_bounds is not None:
-            packed = int(self._fn_json_bounds(raw_bytes, len(raw_bytes)))
-            first = packed >> 32
-            last = packed & 0xFFFFFFFF
-            first_ret = -1 if first == 0xFFFFFFFF else first
-            last_ret = -1 if last == 0xFFFFFFFF else last
-            return first_ret, last_ret
-        return -1, -1
 
     def cleanup(self) -> None:
         """Frees all JIT-allocated native executable pages."""
@@ -664,27 +575,3 @@ def fast_count_jp_and_ascii(text: str) -> tuple[int, int]:
         elif code_point <= 0x024F:
             ascii_count += 1
     return jp_count, ascii_count
-
-
-def fast_find_json_bounds(raw_bytes: bytes) -> tuple[int, int]:
-    """Finds first and last JSON container delimiter indices using native assembly or fallback."""
-    if not raw_bytes:
-        return -1, -1
-    if NATIVE_MANAGER.is_available:
-        first, last = NATIVE_MANAGER.find_json_bounds(raw_bytes)
-        if first != -1 or last != -1:
-            return first, last
-
-    first_brace = raw_bytes.find(b"{")
-    first_bracket = raw_bytes.find(b"[")
-    if first_brace == -1:
-        first = first_bracket
-    elif first_bracket == -1:
-        first = first_brace
-    else:
-        first = min(first_brace, first_bracket)
-
-    last_brace = raw_bytes.rfind(b"}")
-    last_bracket = raw_bytes.rfind(b"]")
-    last = max(last_brace, last_bracket)
-    return first, last

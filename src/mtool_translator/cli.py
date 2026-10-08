@@ -316,14 +316,8 @@ def main():
     """Main CLI dispatch entrypoint."""
     parser = build_parser()
 
-    # If no arguments provided, default to translation stage for backward compatibility
     if len(sys.argv) == 1:
-        print("MTool JSON Translation Engine (Default Mode: Translate)")
-        print(
-            "Use --help to view available commands: "
-            "clean, translate, validate, pipeline, diff, merge.\n"
-        )
-        process_translation(config_file="config.json", auto_confirm=False)
+        parser.print_help()
         return
 
     args = parser.parse_args()

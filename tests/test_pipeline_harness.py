@@ -55,6 +55,8 @@ from mtool_translator.utils import (
 )
 from mtool_translator.validator import process_validation
 
+logger = logging.getLogger(__name__)
+
 
 # ==============================================================================
 # Performance & Result Data Models

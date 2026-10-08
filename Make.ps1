@@ -33,10 +33,8 @@ param(
 # Project paths to inspect/format
 $script:ProjectTargets = @(
     "src",
-    "clean_game_text.py",
     "diff_untranslated.py",
-    "main.py",
-    "validate_translation.py"
+    "main.py"
 )
 
 function Get-PythonInterpreter {

@@ -69,14 +69,12 @@ SUMMARIZE_SUMMARIES_PROMPT = (
 class TokenAwareChunker:
     """Chunks text into token-budgeted batches using an ultra-fast heuristic estimator."""
 
-    __slots__ = ("max_tokens", "model_name")
+    __slots__ = ("max_tokens",)
 
     def __init__(
         self,
-        model_name: str | None = None,
         max_tokens: int = DEFAULT_MAX_TOKENS,
     ) -> None:
-        self.model_name = model_name
         self.max_tokens = max_tokens
 
     def estimate_tokens(self, text: str) -> int:
@@ -175,23 +173,17 @@ class JSONTranslator:
         config.setdefault("retry_delay", 5)
         config.setdefault("request_timeout", 60)
         config.setdefault("batch_size", 30)
-        config.setdefault("save_interval", 100)
-        config.setdefault("api_type", "openai")
         config.setdefault("enable_pre_translation", True)
         config.setdefault("common_translations_file", "common_translations.json")
 
         return config
 
     def _get_api_headers_and_url(self) -> tuple[dict[str, str], str]:
-        if self.config.get("api_type", "openai") == "google":
-            headers = {"Content-Type": "application/json"}
-            api_url = f"{self.config['api_endpoint']}?key={self.config['api_key']}"
-        else:
-            headers = {
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.config['api_key']}",
-            }
-            api_url = self.config["api_endpoint"]
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.config['api_key']}",
+        }
+        api_url = self.config["api_endpoint"]
         return headers, api_url
 
     def _load_common_translations(self) -> dict[str, str]:
@@ -311,10 +303,6 @@ class JSONTranslator:
     def summarize(self, item: str) -> Any:
         """Generates a concise Translation Blueprint for character and tone consistency."""
         return self._generate_blueprint(item, mode="section")
-
-    def summarize_summaries(self, item: str) -> Any:
-        """Synthesizes multiple summary parts into a single blueprint."""
-        return self._generate_blueprint(item, mode="reduce")
 
     def reduce_summaries(self, lst: list[str], max_depth: int = 5) -> str:
         """Combines and reduces summaries hierarchically."""

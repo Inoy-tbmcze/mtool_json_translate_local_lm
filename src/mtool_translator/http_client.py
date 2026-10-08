@@ -59,10 +59,6 @@ class HttpStatusError(HttpRequestError):
     """Raised by raise_for_status() when the response status code is 4xx or 5xx."""
 
 
-# Backward compatibility alias for requests.RequestException
-RequestException = HttpRequestError
-
-
 class HttpResponse:
     """Lightweight, slot-optimized HTTP response wrapper."""
 
@@ -161,9 +157,6 @@ class _AtomicSendMixin:
             self.send(header_bytes)
             if message_body is not None:
                 self.send(message_body)
-
-
-_FastSendOutputMixin = _AtomicSendMixin
 
 
 class _FastHTTPConnection(_AtomicSendMixin, http.client.HTTPConnection):
@@ -452,23 +445,3 @@ class FastLocalHttpClient:
 
 default_client = FastLocalHttpClient()
 atexit.register(default_client.close)
-
-
-def post(
-    url: str,
-    data: bytes | str | None = None,
-    json: Any | None = None,
-    headers: dict[str, str] | None = None,
-    timeout: float | None = None,
-) -> HttpResponse:
-    """Convenience module-level POST using default persistent client."""
-    return default_client.post(url, data=data, json=json, headers=headers, timeout=timeout)
-
-
-def get(
-    url: str,
-    headers: dict[str, str] | None = None,
-    timeout: float | None = None,
-) -> HttpResponse:
-    """Convenience module-level GET using default persistent client."""
-    return default_client.get(url, headers=headers, timeout=timeout)

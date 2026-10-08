@@ -5,7 +5,7 @@ from __future__ import annotations
 import unittest
 from typing import Any
 
-from mtool_translator.native_core import NATIVE_MANAGER, fast_find_json_bounds
+from mtool_translator.native_core import NATIVE_MANAGER
 from mtool_translator.utils import (
     fast_json_loads,
     parse_json_array_safely,
@@ -255,16 +255,8 @@ class TestValidatorParsing(unittest.TestCase):
         self.assertEqual(_parse_validation_json(""), {})
 
 
-class TestNativeJsonBounds(unittest.TestCase):
-    """Verifies native assembly and fallback JSON boundary scanners."""
-
-    def test_json_bounds_detection(self) -> None:
-        """Scans buffer and returns correct first and last delimiter indices."""
-        text = "Leading text {\"key\": [1, 2, 3]} trailing note"
-        raw_b = text.encode("utf-8")
-        first, last = fast_find_json_bounds(raw_b)
-        self.assertEqual(first, text.find("{"))
-        self.assertEqual(last, text.rfind("}"))
+class TestNativeManager(unittest.TestCase):
+    """Verifies native assembly manager initialization."""
 
     def test_native_manager_availability(self) -> None:
         """Asserts native manager is active on Windows x64."""
